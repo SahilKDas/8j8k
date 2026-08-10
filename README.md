@@ -1,6 +1,8 @@
-# 8j8k
+# 6j8k V2 — Svelte multiplayer port
 
-A real-time multiplayer canvas arena. The browser client is written in Svelte; a Node server owns the game simulation and synchronizes clients over WebSockets.
+This is a faithful Svelte port of the original `V2` game from [`6j8k.version1_and_version2`](https://github.com/SahilKDas/6j8k.version1_and_version2/tree/main/V2), with WebSocket multiplayer added alongside the original NPC simulation.
+
+The V2 canvas renderer, CSS, NPC archetypes, bosses, events, map features, combat, upgrades, particles, minimap, and controls are preserved. Svelte owns the page lifecycle and UI markup; the original canvas engine continues to animate on `requestAnimationFrame`. A lightweight WebSocket room synchronizes connected human players at 20 Hz, interpolates remote movement, validates PvP range and rate limits, and coordinates shared map resets.
 
 ## Run locally
 
@@ -9,7 +11,7 @@ npm install
 npm run dev
 ```
 
-Open `http://localhost:5173`. Open a second tab to test multiplayer.
+Open `http://localhost:5173`. Open another browser tab to test multiplayer.
 
 ## Production
 
@@ -18,7 +20,7 @@ npm run build
 NODE_ENV=production npm start
 ```
 
-Set `PORT` to change the default port (`5173`). The same HTTP server serves the built client and upgrades `/ws` connections.
+Set `PORT` to change the default port (`5173`). The HTTP server serves the built Svelte client and upgrades `/ws` connections.
 
 ## Controls
 
@@ -29,5 +31,3 @@ Set `PORT` to change the default port (`5173`). The same HTTP server serves the 
 - Whirlwind: `E`
 - Dash: `Shift`
 - Block: `X` or middle click
-
-The server is authoritative: movement, cooldowns, damage, pickups, upgrades, NPC behavior, events, and map resets are validated in the shared world simulation.
