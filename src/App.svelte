@@ -85,7 +85,7 @@
                 </div>
                 <div>
                     <h2 class="font-bold text-lg text-white">Map Features</h2>
-                    <ul class="list-disc list-inside"><li><strong class="text-yellow-400">King of the Hill:</strong> Stand in the glowing gold zones to get a 2x score multiplier.</li><li><strong class="text-gray-400">Destructible Cover:</strong> Crystal formations block movement and attacks, but can be destroyed.</li><li><strong class="text-red-400">Lava Pools:</strong> Don't stand in them!</li></ul>
+                    <ul class="list-disc list-inside"><li><strong class="text-yellow-400">King of the Hill:</strong> Stand in the glowing gold zones to get a 2x score multiplier.</li><li><strong class="text-gray-400">Destructible Cover:</strong> Crystal formations block movement and attacks, but can be destroyed.</li><li><strong class="text-red-400">Wasteland Lava:</strong> The central badlands are still dangerous.</li><li><strong class="text-cyan-300">Western Shoals:</strong> Water slows movement; islands are safe and currents carry you.</li><li><strong class="text-amber-300">Eastern Desert:</strong> Oases heal, quicksand slows, and dust devils throw fighters off course.</li></ul>
                 </div>
                 <div>
                     <h2 class="font-bold text-lg text-white">Power-ups (5 sec duration)</h2>

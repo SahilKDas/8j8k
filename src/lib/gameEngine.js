@@ -1,3 +1,8 @@
+import {
+    BIOME_BLEND, DESERT_START_X, WATER_END_X, biomeAt,
+    generateBiomeFeatures, pointInsideFeature
+} from './biomes.js';
+
 // Direct Svelte lifecycle port of the original V2 canvas engine.
 export function createGame() {
 const lifecycle = new AbortController();
@@ -41,6 +46,7 @@ const DASH_SPEED_MULTIPLIER = 3;
 const DASH_DURATION = 150;
 const DASH_COOLDOWN = 2000;
 const BOSS_SPAWN_SCORE_INTERVAL = 2000;
+const MAX_PARTICLES = 1400;
 
 const NUM_KOTH_ZONES = 3;
 const KOTH_ZONE_RADIUS = 150;
@@ -121,12 +127,16 @@ const resetMapButton = document.getElementById('reset-map-button');
 let localPlayer = {}, players = {}, orbs = {}, xpOrbs = [];
 let projectiles = { thrownSwords: [], shurikens: [], frostbolts: [], vials: [] };
 let lavaPools = [], kothZones = [], coverObjects = [], powerUps = [], activeAoeZones = [], particles = [];
+let biomeFeatures = { islands: [], currents: [], oases: [], quicksand: [], dustDevils: [], props: [] };
+let biomePaints = null;
 let screenShake = 0, playerId = `local_${crypto.randomUUID().slice(0, 8)}`, isDead = true, gameStarted = false;
 let camera = { x: 0, y: 0 };
+let cameraReady = false;
 const keys = {}, mouse = { x: 0, y: 0, down: false, rightDown: false, middleDown: false };
 let lastFrameTime = Date.now(), lastUiUpdateTime = 0, mapResetting = false, mapResetTime = 0;
 let currentBoss = null, lastBossSpawnScore = 0, bossSpawnCounter = 0, lastPowerUpSpawnTime = 0;
 let isBloodMoonActive = false, bloodMoonEndTime = 0, lastEventCheckTime = 0;
+let lastMinimapDraw = 0;
 
 const random = () => {
     rngState |= 0;
@@ -310,6 +320,8 @@ function setupGame() {
     generateLavaPools(NUM_LAVA_POOLS);
     generateKothZones(NUM_KOTH_ZONES);
     generateCover(NUM_COVER_OBJECTS);
+    biomeFeatures = generateBiomeFeatures(random);
+    rebuildBiomePaints();
 
     for(let i = 0; i < NUM_BOTS; i++) {
         const botId = `bot_${i}`;
@@ -328,7 +340,7 @@ function joinGame(name) {
 
 function respawnPlayer() {
     isDead = false;
-    const spawnPoint = getSafeSpawnPoint();
+    const spawnPoint = getSafeSpawnPoint(playerId);
     localPlayer.x = spawnPoint.x;
     localPlayer.y = spawnPoint.y;
     localPlayer.health = MAX_HP;
@@ -345,6 +357,7 @@ function respawnPlayer() {
     localPlayer.slowEndTime = 0;
     localPlayer.isStunned = false;
     localPlayer.stunEndTime = 0;
+    localPlayer.spawnProtectedUntil = Date.now() + 1800;
     localPlayer.upgrades = { speed: 0, attackSpeed: 0, healthRegen: 0 };
 
     updateSwordTier(localPlayer);
@@ -353,7 +366,7 @@ function respawnPlayer() {
 }
 
 function createPlayer(id, name, isLocal) {
-    const spawnPoint = getSafeSpawnPoint();
+    const spawnPoint = getSafeSpawnPoint(id);
     const player = {
         id, name, isLocal, x: spawnPoint.x, y: spawnPoint.y, angle: 0, score: 0, health: MAX_HP, shield: 0,
         swordLength: BASE_SWORD_LENGTH, kills: 0, armor: 0, swordTier: 0, swordDamage: SWORD_TIERS[0].damage, swordColor: SWORD_TIERS[0].color, swordShape: SWORD_TIERS[0].shape,
@@ -361,7 +374,7 @@ function createPlayer(id, name, isLocal) {
         isDashing: false, lastDashTime: 0, isWhirlwinding: false, lastWhirlwindTime: 0, lastHitTime: 0, pastPositions: [],
         team: 0, botType: 'melee', aiState: 'wandering', target: null, lastActionTime: 0,
         upgrades: { speed: 0, attackSpeed: 0, healthRegen: 0 },
-        activePowerUp: null, powerUpEndTime: 0, isSlowed: false, slowEndTime: 0, isStunned: false, stunEndTime: 0,
+        activePowerUp: null, powerUpEndTime: 0, isSlowed: false, slowEndTime: 0, isStunned: false, stunEndTime: 0, spawnProtectedUntil: Date.now() + 1200,
       };
 
       if (!isLocal) {
@@ -391,12 +404,16 @@ function generateInitialOrbs(count) {
 
 function generateLavaPools(count) {
     lavaPools = [];
-    for (let i = 0; i < count; i++) lavaPools.push({ x: getRandom(100, MAP_SIZE - 100), y: getRandom(100, MAP_SIZE - 100), radius: getRandom(80, 200), pulse: random() });
+    for (let i = 0; i < count; i++) lavaPools.push({ x: getRandom(WATER_END_X + 120, DESERT_START_X - 120), y: getRandom(100, MAP_SIZE - 100), radius: getRandom(80, 160), pulse: random() });
 }
 
 function generateKothZones(count) {
     kothZones = [];
-     for (let i = 0; i < count; i++) kothZones.push({ x: getRandom(KOTH_ZONE_RADIUS, MAP_SIZE - KOTH_ZONE_RADIUS), y: getRandom(KOTH_ZONE_RADIUS, MAP_SIZE - KOTH_ZONE_RADIUS), radius: KOTH_ZONE_RADIUS, pulse: random() });
+    const ranges = [[180, WATER_END_X - 120], [WATER_END_X + 160, DESERT_START_X - 160], [DESERT_START_X + 160, MAP_SIZE - 180]];
+    for (let i = 0; i < count; i++) {
+        const range = ranges[i % ranges.length];
+        kothZones.push({ x: getRandom(range[0], range[1]), y: getRandom(KOTH_ZONE_RADIUS, MAP_SIZE - KOTH_ZONE_RADIUS), radius: KOTH_ZONE_RADIUS, pulse: random() });
+    }
 }
 
 function generateCover(count) {
@@ -404,20 +421,23 @@ function generateCover(count) {
     for(let i=0; i<count; i++) coverObjects.push({ x: getRandom(200, MAP_SIZE - 200), y: getRandom(200, MAP_SIZE - 200), radius: getRandom(20, 50), health: COVER_HEALTH, maxHealth: COVER_HEALTH });
 }
 
-function getSafeSpawnPoint() {
-    let spawnPoint = { x: 0, y: 0 }, isSafe = false;
-    while (!isSafe) {
+function getSafeSpawnPoint(excludedId = null) {
+    let spawnPoint = { x: MAP_SIZE / 2, y: MAP_SIZE / 2 };
+    for (let attempt = 0; attempt < 80; attempt++) {
         spawnPoint.x = getRandom(PLAYER_RADIUS, MAP_SIZE - PLAYER_RADIUS);
         spawnPoint.y = getRandom(PLAYER_RADIUS, MAP_SIZE - PLAYER_RADIUS);
-        isSafe = true;
-        if (localPlayer && localPlayer.health > 0 && gameStarted && distance(spawnPoint, localPlayer) < window.innerWidth / 2) isSafe = false;
+        const nearHazard = lavaPools.some(pool => distance(spawnPoint, pool) < pool.radius + PLAYER_RADIUS + 36) ||
+            biomeFeatures.quicksand.some(pit => distance(spawnPoint, pit) < pit.radius + PLAYER_RADIUS + 20);
+        const insideCover = coverObjects.some(cover => distance(spawnPoint, cover) < cover.radius + PLAYER_RADIUS + 20);
+        const nearFighter = Object.values(players).some(player => player && player.id !== excludedId && player.health > 0 && distance(spawnPoint, player) < 150);
+        if (!nearHazard && !insideCover && !nearFighter) return spawnPoint;
     }
     return spawnPoint;
 }
 
 function gameLoop() {
     const now = Date.now();
-    const deltaTime = (now - lastFrameTime) / 1000.0;
+    const deltaTime = Math.min(0.05, (now - lastFrameTime) / 1000.0);
     lastFrameTime = now;
     frameCounter++;
     const frameNow = performance.now();
@@ -480,6 +500,41 @@ function updateRemotePlayer(player) {
     player.y += (player.targetY - player.y) * 0.28;
 }
 
+function isOnIsland(player) {
+    return biomeFeatures.islands.some(island => pointInsideFeature(player, island, -PLAYER_RADIUS * 0.25));
+}
+
+function terrainSpeedMultiplier(player) {
+    if (biomeAt(player.x) === 'water' && !isOnIsland(player)) return 0.74;
+    if (biomeFeatures.quicksand.some(pit => pointInsideFeature(player, pit, PLAYER_RADIUS * 0.2))) return 0.52;
+    return 1;
+}
+
+function applyBiomeEffects(player, deltaTime) {
+    if (player.isRemote) return;
+    const frameScale = Math.min(2, deltaTime * 60);
+    for (const current of biomeFeatures.currents) {
+        if (!pointInsideFeature(player, current)) continue;
+        player.x += Math.cos(current.angle) * current.strength * frameScale;
+        player.y += Math.sin(current.angle) * current.strength * frameScale;
+    }
+    for (const devil of biomeFeatures.dustDevils) {
+        if (!pointInsideFeature(player, devil)) continue;
+        const angle = Math.atan2(player.y - devil.y, player.x - devil.x);
+        player.x += Math.cos(angle + devil.direction * Math.PI / 2) * 1.25 * frameScale;
+        player.y += Math.sin(angle + devil.direction * Math.PI / 2) * 1.25 * frameScale;
+        if (player.isLocal && random() < 0.05) createParticles(player.x, player.y, 1, 'rgba(246, 173, 85, 0.75)', 1.5, 0.5);
+    }
+    if (player.isLocal) {
+        for (const oasis of biomeFeatures.oases) {
+            if (pointInsideFeature(player, oasis, PLAYER_RADIUS)) {
+                player.health = Math.min(MAX_HP, player.health + 8 * deltaTime);
+                if (random() < 0.035) createParticles(player.x, player.y, 1, 'rgba(129, 230, 217, 0.8)', 1.1, 0.8);
+            }
+        }
+    }
+}
+
 function updateLocalPlayer(player, deltaTime) {
     if (player.isStunned) {
         if (random() < 0.3) {
@@ -495,12 +550,14 @@ function updateLocalPlayer(player, deltaTime) {
     if (keys['w'] || keys['ArrowUp']) dy -= 1; if (keys['s'] || keys['ArrowDown']) dy += 1;
     if (keys['a'] || keys['ArrowLeft']) dx -= 1; if (keys['d'] || keys['ArrowRight']) dx += 1;
     let currentSpeed = PLAYER_SPEED * (1 + player.upgrades.speed * 0.1);
+    currentSpeed *= terrainSpeedMultiplier(player);
     if(player.activePowerUp === 'speed') currentSpeed *= 1.8;
     if (player.isDashing) currentSpeed *= DASH_SPEED_MULTIPLIER;
     if (player.isSlowed && Date.now() < player.slowEndTime) currentSpeed *= 0.5;
     const magnitude = Math.sqrt(dx*dx + dy*dy);
     if (magnitude > 0) { dx = (dx / magnitude) * currentSpeed; dy = (dy / magnitude) * currentSpeed; }
     player.x += dx; player.y += dy;
+    applyBiomeEffects(player, deltaTime);
     for(const cover of coverObjects) { if(!cover) continue; const dist = distance(player, cover); if (dist < PLAYER_RADIUS + cover.radius) { const angle = Math.atan2(player.y - cover.y, player.x - cover.x); player.x = cover.x + Math.cos(angle) * (PLAYER_RADIUS + cover.radius); player.y = cover.y + Math.sin(angle) * (PLAYER_RADIUS + cover.radius); } }
     player.x = Math.max(PLAYER_RADIUS, Math.min(MAP_SIZE - PLAYER_RADIUS, player.x));
     player.y = Math.max(PLAYER_RADIUS, Math.min(MAP_SIZE - PLAYER_RADIUS, player.y));
@@ -513,6 +570,7 @@ function updateBot(bot, deltaTime) {
     if (currentBoss && !['healer', 'thief'].includes(bot.botType)) return;
     if (bot.isStunned && Date.now() < bot.stunEndTime) return;
 
+    const startX = bot.x, startY = bot.y;
     switch(bot.botType) {
         case 'healer': updateHealerBot(bot, deltaTime); break;
         case 'shuriken': updateShurikenBot(bot, deltaTime); break;
@@ -522,6 +580,10 @@ function updateBot(bot, deltaTime) {
         case 'thief': updateThiefBot(bot, deltaTime); break;
         case 'melee': default: updateMeleeBot(bot, deltaTime); break;
     }
+    const terrainMultiplier = terrainSpeedMultiplier(bot);
+    bot.x = startX + (bot.x - startX) * terrainMultiplier;
+    bot.y = startY + (bot.y - startY) * terrainMultiplier;
+    applyBiomeEffects(bot, deltaTime);
     for(const cover of coverObjects) { if(!cover) continue; const dist = distance(bot, cover); if (dist < PLAYER_RADIUS + cover.radius) { const angle = Math.atan2(bot.y - cover.y, bot.x - cover.x); bot.x = cover.x + Math.cos(angle) * (PLAYER_RADIUS + cover.radius); bot.y = cover.y + Math.sin(angle) * (PLAYER_RADIUS + cover.radius); } }
     bot.x = Math.max(PLAYER_RADIUS, Math.min(MAP_SIZE - PLAYER_RADIUS, bot.x));
     bot.y = Math.max(PLAYER_RADIUS, Math.min(MAP_SIZE - PLAYER_RADIUS, bot.y));
@@ -838,25 +900,30 @@ function resetMap(requestSharedReset = true) {
     mapResetting = true;
     mapResetTime = Date.now();
 
-    Object.values(players).forEach(p => {
-        if (p) {
-            const spawnPoint = getSafeSpawnPoint();
-            p.x = spawnPoint.x; p.y = spawnPoint.y; p.health = MAX_HP; p.score = 0; p.kills = 0; p.armor = 0; p.swordLength = BASE_SWORD_LENGTH;
-            p.isDisarmed = false; p.isAttacking = false; p.isBlocking = false; p.isDashing = false;
-            if (p.isLocal) p.upgrades = { speed: 0, attackSpeed: 0, healthRegen: 0 };
-            updateSwordTier(p);
-        }
-    });
     generateInitialOrbs(MAX_ORBS);
     generateLavaPools(NUM_LAVA_POOLS);
     generateKothZones(NUM_KOTH_ZONES);
     generateCover(NUM_COVER_OBJECTS);
+    biomeFeatures = generateBiomeFeatures(random);
+    rebuildBiomePaints();
+
+    Object.values(players).forEach(p => {
+        if (p) {
+            const spawnPoint = getSafeSpawnPoint(p.id);
+            p.x = spawnPoint.x; p.y = spawnPoint.y; p.health = MAX_HP; p.score = 0; p.kills = 0; p.armor = 0; p.swordLength = BASE_SWORD_LENGTH;
+            p.isDisarmed = false; p.isAttacking = false; p.isBlocking = false; p.isDashing = false;
+            p.spawnProtectedUntil = Date.now() + 1200;
+            if (p.isLocal) p.upgrades = { speed: 0, attackSpeed: 0, healthRegen: 0 };
+            updateSwordTier(p);
+        }
+    });
     projectiles = { thrownSwords: [], shurikens: [], frostbolts: [], vials: [] };
     xpOrbs = []; particles = []; powerUps = [];
     currentBoss = null;
     lastBossSpawnScore = 0;
     resetMapContainer.classList.add('hidden');
     isBloodMoonActive = false;
+    cameraReady = false;
     if (bloodMoonOverlay) bloodMoonOverlay.classList.add('hidden');
 }
 
@@ -1019,6 +1086,7 @@ function checkProjectileHits(targets, scoreMultiplier) {
 
 function takeDamage(target, damage, attacker, scoreMultiplier = 1) {
     if (target.health <= 0 || (attacker && target.id === attacker.id)) return;
+    if (target.spawnProtectedUntil && Date.now() < target.spawnProtectedUntil) return;
     if (target.isRemote) {
         if (attacker?.isLocal) sendNetwork({ type: 'hit', targetId: target.id, amount: damage });
         return;
@@ -1094,7 +1162,9 @@ function handleBossDeath() {
 function addScreenShake(amount) { screenShake = Math.max(screenShake, amount); }
 
 function createParticles(x, y, count, color, speed, life) {
-    for (let i = 0; i < count; i++) {
+    const available = Math.max(0, MAX_PARTICLES - particles.length);
+    const particleCount = Math.min(count, available);
+    for (let i = 0; i < particleCount; i++) {
         const angle = random() * Math.PI * 2;
         const currentSpeed = random() * speed;
         particles.push({ x, y, vx: Math.cos(angle) * currentSpeed, vy: Math.sin(angle) * currentSpeed, life: random() * life, color, radius: random() * 3 + 1 });
@@ -1109,6 +1179,7 @@ function resizeCanvas() {
     canvas.height = window.innerHeight;
     minimapCanvas.width = MINIMAP_SIZE;
     minimapCanvas.height = MINIMAP_SIZE;
+    rebuildBiomePaints();
 }
 
 function isVisible(obj, radius) {
@@ -1119,9 +1190,17 @@ function isVisible(obj, radius) {
 }
 
 function draw() {
-     if (localPlayer && localPlayer.x && !isDead) { camera.x = localPlayer.x - canvas.width / 2; camera.y = localPlayer.y - canvas.height / 2; }
+    if (localPlayer && localPlayer.x && !isDead) {
+        const maxCameraX = Math.max(0, MAP_SIZE - canvas.width);
+        const maxCameraY = Math.max(0, MAP_SIZE - canvas.height);
+        const targetX = Math.max(0, Math.min(maxCameraX, localPlayer.x - canvas.width / 2));
+        const targetY = Math.max(0, Math.min(maxCameraY, localPlayer.y - canvas.height / 2));
+        if (!cameraReady) { camera.x = targetX; camera.y = targetY; cameraReady = true; }
+        else { camera.x += (targetX - camera.x) * 0.16; camera.y += (targetY - camera.y) * 0.16; }
+    }
 
-    if (screenShake > 0) {
+    const isShaking = screenShake > 0;
+    if (isShaking) {
         ctx.save();
         const shakeX = (random() - 0.5) * screenShake;
         const shakeY = (random() - 0.5) * screenShake;
@@ -1134,7 +1213,9 @@ function draw() {
     ctx.save();
     ctx.translate(-camera.x, -camera.y);
 
+    drawBiomeBackground();
     drawGrid();
+    drawBiomeFeatures();
     lavaPools.forEach(p => { if (isVisible(p, p.radius)) drawLava(p) });
     kothZones.forEach(z => { if (isVisible(z, z.radius)) drawKothZone(z) });
     Object.values(orbs).forEach(o => { if (o && isVisible(o, ORB_RADIUS)) drawOrb(o) });
@@ -1143,17 +1224,19 @@ function draw() {
     coverObjects.forEach(c => { if(c && isVisible(c, c.radius)) drawCover(c) });
     powerUps.forEach(p => { if(isVisible(p, p.radius)) drawPowerUp(p) });
 
-    Object.values(projectiles).flat().forEach(p => { if (isVisible(p, 20)) drawProjectile(p) });
+    for (const projectileGroup of Object.values(projectiles)) {
+        for (const projectile of projectileGroup) if (isVisible(projectile, 20)) drawProjectile(projectile);
+    }
 
-    activeAoeZones.forEach(drawAoeZone);
+    activeAoeZones.forEach(zone => { if (isVisible(zone, zone.radius || 100)) drawAoeZone(zone); });
     Object.values(players).forEach(p => { if(p && isVisible(p, PLAYER_RADIUS)) drawPlayer(p) });
     if (currentBoss && isVisible(currentBoss, currentBoss.radius)) drawBoss();
 
-    particles.forEach(drawParticle);
+    particles.forEach(particle => { if (isVisible(particle, particle.radius)) drawParticle(particle); });
 
     ctx.restore();
 
-    if (screenShake > 0) ctx.restore();
+    if (isShaking) ctx.restore();
 
 
     if (mapResetting) {
@@ -1173,31 +1256,238 @@ function draw() {
         lastUiUpdateTime = now;
     }
 
-    drawMinimap();
+    drawScreenPolish();
+    if (now - lastMinimapDraw > 100) {
+        drawMinimap();
+        lastMinimapDraw = now;
+    }
+}
+
+function rebuildBiomePaints() {
+    if (!ctx || !canvas.width) return;
+    const water = ctx.createLinearGradient(0, 0, WATER_END_X, 0);
+    water.addColorStop(0, '#123f55');
+    water.addColorStop(0.55, '#17637a');
+    water.addColorStop(1, '#23576a');
+    const wasteland = ctx.createLinearGradient(WATER_END_X, 0, DESERT_START_X, 0);
+    wasteland.addColorStop(0, '#3f2024');
+    wasteland.addColorStop(0.5, '#4c1d1d');
+    wasteland.addColorStop(1, '#593123');
+    const desert = ctx.createLinearGradient(DESERT_START_X, 0, MAP_SIZE, 0);
+    desert.addColorStop(0, '#8b5a2b');
+    desert.addColorStop(0.48, '#b7792e');
+    desert.addColorStop(1, '#d29a43');
+    const waterBlend = ctx.createLinearGradient(WATER_END_X - BIOME_BLEND, 0, WATER_END_X + BIOME_BLEND, 0);
+    waterBlend.addColorStop(0, 'rgba(63,32,36,0)');
+    waterBlend.addColorStop(1, 'rgba(63,32,36,0.72)');
+    const desertBlend = ctx.createLinearGradient(DESERT_START_X - BIOME_BLEND, 0, DESERT_START_X + BIOME_BLEND, 0);
+    desertBlend.addColorStop(0, 'rgba(183,121,46,0)');
+    desertBlend.addColorStop(1, 'rgba(183,121,46,0.76)');
+    const vignette = ctx.createRadialGradient(canvas.width / 2, canvas.height / 2, canvas.height * 0.22, canvas.width / 2, canvas.height / 2, Math.max(canvas.width, canvas.height) * 0.72);
+    vignette.addColorStop(0, 'rgba(0,0,0,0)');
+    vignette.addColorStop(1, 'rgba(0,0,0,0.28)');
+    biomePaints = { water, wasteland, desert, waterBlend, desertBlend, vignette };
+}
+
+function drawBiomeBackground() {
+    if (!biomePaints) rebuildBiomePaints();
+    ctx.fillStyle = '#17151a';
+    ctx.fillRect(camera.x, camera.y, canvas.width, canvas.height);
+    ctx.fillStyle = biomePaints.water;
+    ctx.fillRect(0, 0, WATER_END_X, MAP_SIZE);
+    ctx.fillStyle = biomePaints.wasteland;
+    ctx.fillRect(WATER_END_X, 0, DESERT_START_X - WATER_END_X, MAP_SIZE);
+    ctx.fillStyle = biomePaints.desert;
+    ctx.fillRect(DESERT_START_X, 0, MAP_SIZE - DESERT_START_X, MAP_SIZE);
+
+    ctx.fillStyle = biomePaints.waterBlend;
+    ctx.fillRect(WATER_END_X - BIOME_BLEND, 0, BIOME_BLEND * 2, MAP_SIZE);
+    ctx.fillStyle = biomePaints.desertBlend;
+    ctx.fillRect(DESERT_START_X - BIOME_BLEND, 0, BIOME_BLEND * 2, MAP_SIZE);
+
+    drawWaterTexture();
+    drawDesertTexture();
+    ctx.save();
+    ctx.globalAlpha = 0.13;
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 64px Roboto';
+    ctx.textAlign = 'center';
+    ctx.fillText('THE SHOALS', WATER_END_X / 2, 110);
+    ctx.fillText('ASHEN WASTE', (WATER_END_X + DESERT_START_X) / 2, 110);
+    ctx.fillText('SUNSCORCH', (DESERT_START_X + MAP_SIZE) / 2, 110);
+    ctx.restore();
+}
+
+function drawWaterTexture() {
+    const startY = Math.max(30, Math.floor(camera.y / 58) * 58);
+    const endY = Math.min(MAP_SIZE, camera.y + canvas.height + 60);
+    const endX = Math.min(WATER_END_X, camera.x + canvas.width + 80);
+    const startX = Math.max(0, camera.x - 80);
+    const time = Date.now() / 700;
+    ctx.strokeStyle = 'rgba(125, 211, 252, 0.16)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    for (let y = startY; y < endY; y += 58) {
+        for (let x = startX; x < endX; x += 120) {
+            const wave = Math.sin(time + x * 0.015 + y * 0.008) * 5;
+            ctx.moveTo(x, y + wave);
+            ctx.quadraticCurveTo(x + 30, y - 5 + wave, x + 60, y + wave);
+        }
+    }
+    ctx.stroke();
+}
+
+function drawDesertTexture() {
+    const startY = Math.max(40, Math.floor(camera.y / 105) * 105);
+    const endY = Math.min(MAP_SIZE, camera.y + canvas.height + 100);
+    const startX = Math.max(DESERT_START_X, camera.x - 100);
+    const endX = Math.min(MAP_SIZE, camera.x + canvas.width + 100);
+    ctx.strokeStyle = 'rgba(255, 226, 153, 0.16)';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    for (let y = startY; y < endY; y += 105) {
+        for (let x = startX; x < endX; x += 210) {
+            ctx.moveTo(x, y);
+            ctx.bezierCurveTo(x + 55, y - 24, x + 125, y + 22, x + 190, y - 2);
+        }
+    }
+    ctx.stroke();
+}
+
+function drawBiomeFeatures() {
+    const now = Date.now();
+    for (const island of biomeFeatures.islands) {
+        if (!isVisible(island, island.radius + 20)) continue;
+        const ripple = 4 + Math.sin(now / 450 + island.phase) * 3;
+        ctx.strokeStyle = 'rgba(186, 230, 253, 0.28)';
+        ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(island.x, island.y, island.radius + ripple, 0, Math.PI * 2); ctx.stroke();
+        ctx.fillStyle = '#c8a96a';
+        ctx.beginPath(); ctx.arc(island.x, island.y, island.radius, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#5f7f4c';
+        ctx.beginPath(); ctx.arc(island.x, island.y, island.radius * 0.72, 0, Math.PI * 2); ctx.fill();
+    }
+    for (const current of biomeFeatures.currents) {
+        if (!isVisible(current, current.radius)) continue;
+        const pulse = 0.6 + Math.sin(now / 500 + current.phase) * 0.18;
+        ctx.save(); ctx.translate(current.x, current.y); ctx.rotate(current.angle);
+        ctx.strokeStyle = `rgba(103, 232, 249, ${0.22 * pulse})`;
+        ctx.lineWidth = 4;
+        for (let offset = -28; offset <= 28; offset += 28) {
+            ctx.beginPath(); ctx.moveTo(-current.radius * 0.52, offset); ctx.lineTo(current.radius * 0.38, offset); ctx.lineTo(current.radius * 0.18, offset - 12); ctx.moveTo(current.radius * 0.38, offset); ctx.lineTo(current.radius * 0.18, offset + 12); ctx.stroke();
+        }
+        ctx.restore();
+    }
+    for (const pit of biomeFeatures.quicksand) {
+        if (!isVisible(pit, pit.radius)) continue;
+        ctx.fillStyle = 'rgba(116, 76, 33, 0.34)';
+        ctx.beginPath(); ctx.arc(pit.x, pit.y, pit.radius, 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = 'rgba(252, 211, 77, 0.28)';
+        ctx.lineWidth = 3;
+        for (let ring = 0.35; ring < 1; ring += 0.25) {
+            ctx.beginPath(); ctx.arc(pit.x, pit.y, pit.radius * ring, now / 900 + pit.phase, now / 900 + pit.phase + Math.PI * 1.35); ctx.stroke();
+        }
+    }
+    for (const oasis of biomeFeatures.oases) {
+        if (!isVisible(oasis, oasis.radius + 20)) continue;
+        ctx.fillStyle = 'rgba(74, 222, 128, 0.2)';
+        ctx.beginPath(); ctx.arc(oasis.x, oasis.y, oasis.radius + 14, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = '#168aad';
+        ctx.beginPath(); ctx.ellipse(oasis.x, oasis.y, oasis.radius, oasis.radius * 0.62, 0, 0, Math.PI * 2); ctx.fill();
+        ctx.strokeStyle = 'rgba(165, 243, 252, 0.65)';
+        ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.ellipse(oasis.x, oasis.y, oasis.radius - 9 + Math.sin(now / 500 + oasis.phase) * 3, oasis.radius * 0.48, 0, 0, Math.PI * 2); ctx.stroke();
+    }
+    for (const devil of biomeFeatures.dustDevils) {
+        if (!isVisible(devil, devil.radius)) continue;
+        ctx.strokeStyle = 'rgba(255, 237, 180, 0.32)';
+        ctx.lineWidth = 4;
+        for (let ring = 0.3; ring <= 1; ring += 0.23) {
+            const angle = now / 550 * devil.direction + devil.phase + ring;
+            ctx.beginPath(); ctx.arc(devil.x, devil.y, devil.radius * ring, angle, angle + Math.PI * 1.15); ctx.stroke();
+        }
+    }
+    for (const prop of biomeFeatures.props) if (isVisible(prop, 24)) drawBiomeProp(prop, now);
+}
+
+function drawBiomeProp(prop, now) {
+    ctx.save();
+    ctx.translate(prop.x, prop.y);
+    ctx.scale(prop.scale, prop.scale);
+    if (prop.type === 'reed') {
+        const sway = Math.sin(now / 800 + prop.phase) * 2;
+        ctx.strokeStyle = '#6b8f54'; ctx.lineWidth = 3; ctx.beginPath();
+        ctx.moveTo(-5, 8); ctx.quadraticCurveTo(-4, -7, sway - 3, -15); ctx.moveTo(2, 8); ctx.quadraticCurveTo(1, -8, sway + 4, -19); ctx.moveTo(7, 8); ctx.quadraticCurveTo(8, -3, sway + 9, -12); ctx.stroke();
+    } else if (prop.type === 'stone') {
+        ctx.fillStyle = '#7895a2'; ctx.beginPath(); ctx.ellipse(0, 3, 10, 6, prop.phase, 0, Math.PI * 2); ctx.fill();
+    } else if (prop.type === 'cactus') {
+        ctx.strokeStyle = '#3f6f45'; ctx.lineWidth = 7; ctx.lineCap = 'round'; ctx.beginPath(); ctx.moveTo(0, 12); ctx.lineTo(0, -15); ctx.moveTo(0, -3); ctx.lineTo(-8, -8); ctx.lineTo(-8, -13); ctx.moveTo(0, 2); ctx.lineTo(8, -2); ctx.lineTo(8, -7); ctx.stroke();
+    } else {
+        ctx.strokeStyle = 'rgba(255,245,215,0.65)'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(-10, 5); ctx.quadraticCurveTo(0, -8, 10, 5); ctx.moveTo(-5, 2); ctx.lineTo(-10, -3); ctx.moveTo(5, 2); ctx.lineTo(10, -3); ctx.stroke();
+    }
+    ctx.restore();
+}
+
+function drawScreenPolish() {
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    if (localPlayer?.isLocal && !isDead) {
+        const biome = biomeAt(localPlayer.x);
+        ctx.fillStyle = biome === 'water' ? 'rgba(34, 211, 238, 0.025)' : biome === 'desert' ? 'rgba(251, 191, 36, 0.025)' : 'rgba(127, 29, 29, 0.018)';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        if (localPlayer.isDashing) {
+            ctx.strokeStyle = 'rgba(255,255,255,0.24)';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            for (let index = 0; index < 12; index++) {
+                const y = (index * 71 + Date.now() / 5) % canvas.height;
+                ctx.moveTo(canvas.width * 0.1, y); ctx.lineTo(canvas.width * 0.1 + 55, y);
+                ctx.moveTo(canvas.width * 0.85, y + 25); ctx.lineTo(canvas.width * 0.85 + 55, y + 25);
+            }
+            ctx.stroke();
+        }
+    }
+    ctx.fillStyle = biomePaints?.vignette || 'rgba(0,0,0,0.12)';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.restore();
 }
 
 function drawGrid() {
-    ctx.strokeStyle = "rgba(0,0,0,0.2)"; ctx.lineWidth = 1;
+    ctx.strokeStyle = "rgba(0,0,0,0.14)"; ctx.lineWidth = 1;
     const gridSize = 50;
     const startX = Math.floor(camera.x / gridSize) * gridSize, endX = Math.ceil((camera.x + canvas.width) / gridSize) * gridSize;
     const startY = Math.floor(camera.y / gridSize) * gridSize, endY = Math.ceil((camera.y + canvas.height) / gridSize) * gridSize;
-    for (let x = startX; x < endX; x += gridSize) { ctx.beginPath(); ctx.moveTo(x, startY); ctx.lineTo(x, endY); ctx.stroke(); }
-    for (let y = startY; y < endY; y += gridSize) { ctx.beginPath(); ctx.moveTo(startX, y); ctx.lineTo(endX, y); ctx.stroke(); }
+    ctx.beginPath();
+    for (let x = startX; x < endX; x += gridSize) { ctx.moveTo(x, startY); ctx.lineTo(x, endY); }
+    for (let y = startY; y < endY; y += gridSize) { ctx.moveTo(startX, y); ctx.lineTo(endX, y); }
+    ctx.stroke();
 }
 
 function drawLava(pool) {
     const now = Date.now(), radius = pool.radius + Math.sin(now / 500 + pool.pulse) * 10;
+    ctx.fillStyle = 'rgba(255, 69, 0, 0.12)';
+    ctx.beginPath(); ctx.arc(pool.x, pool.y, radius + 22, 0, Math.PI * 2); ctx.fill();
     ctx.fillStyle = `rgba(255, ${100 + Math.sin(now / 300 + pool.pulse) * 20}, 0, 0.7)`;
     ctx.beginPath(); ctx.arc(pool.x, pool.y, radius, 0, Math.PI * 2); ctx.fill();
+    ctx.strokeStyle = 'rgba(255, 210, 110, 0.32)'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(pool.x, pool.y, radius * 0.72, now / 900, now / 900 + Math.PI * 1.45); ctx.stroke();
 }
 
 function drawKothZone(zone) {
     const now = Date.now(), alpha = 0.1 + Math.sin(now / 700 + zone.pulse) * 0.1;
     ctx.fillStyle = `rgba(255, 215, 0, ${alpha})`; ctx.strokeStyle = `rgba(255, 215, 0, ${alpha * 2})`;
     ctx.lineWidth = 5; ctx.beginPath(); ctx.arc(zone.x, zone.y, zone.radius, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    ctx.save(); ctx.translate(zone.x, zone.y); ctx.rotate(now / 6000);
+    ctx.strokeStyle = `rgba(255, 235, 130, ${alpha * 1.4})`; ctx.lineWidth = 2; ctx.beginPath();
+    for (let index = 0; index < 8; index++) { const angle = index * Math.PI / 4; ctx.moveTo(Math.cos(angle) * zone.radius * 0.72, Math.sin(angle) * zone.radius * 0.72); ctx.lineTo(Math.cos(angle) * zone.radius * 0.92, Math.sin(angle) * zone.radius * 0.92); }
+    ctx.stroke(); ctx.restore();
 }
 
-function drawOrb(orb) { if(!orb) return; ctx.beginPath(); ctx.arc(orb.x, orb.y, ORB_RADIUS, 0, Math.PI * 2); ctx.fillStyle = orb.color; ctx.fill(); }
+function drawOrb(orb) {
+    if(!orb) return;
+    ctx.globalAlpha = 0.18; ctx.beginPath(); ctx.arc(orb.x, orb.y, ORB_RADIUS * 2.2, 0, Math.PI * 2); ctx.fillStyle = orb.color; ctx.fill();
+    ctx.globalAlpha = 1; ctx.beginPath(); ctx.arc(orb.x, orb.y, ORB_RADIUS, 0, Math.PI * 2); ctx.fillStyle = orb.color; ctx.fill();
+}
 
 function drawXpOrb(orb) {
     ctx.fillStyle = '#48bb78'; ctx.beginPath(); ctx.arc(orb.x, orb.y, orb.radius, 0, Math.PI * 2); ctx.fill();
@@ -1286,6 +1576,16 @@ function drawPlayer(player) {
     if (player.health <= 0) return;
     const hitFlash = Date.now() - player.lastHitTime < 100;
 
+    const playerBiome = biomeAt(player.x);
+    if (playerBiome === 'water' && !isOnIsland(player)) {
+        const ripple = (Date.now() / 20) % 18;
+        ctx.strokeStyle = `rgba(186, 230, 253, ${0.42 * (1 - ripple / 18)})`;
+        ctx.lineWidth = 2; ctx.beginPath(); ctx.ellipse(player.x, player.y + PLAYER_RADIUS * 0.7, PLAYER_RADIUS + ripple, 5 + ripple * 0.3, 0, 0, Math.PI * 2); ctx.stroke();
+    } else if (playerBiome === 'desert' && (player.isDashing || player.isAttacking)) {
+        ctx.fillStyle = 'rgba(255, 228, 158, 0.2)';
+        ctx.beginPath(); ctx.arc(player.x - Math.cos(player.angle) * 18, player.y - Math.sin(player.angle) * 18, PLAYER_RADIUS * 1.3, 0, Math.PI * 2); ctx.fill();
+    }
+
     let playerColor = "#000000";
     if (hitFlash) playerColor = "white";
     else { switch (player.botType) { case 'healer': playerColor = '#48BB78'; break; case 'shuriken': playerColor = '#A0AEC0'; break; } if (player.isLocal || player.isRemote) playerColor = "#FFFFFF"; }
@@ -1312,6 +1612,12 @@ function drawPlayer(player) {
     ctx.save(); ctx.translate(player.x, player.y); ctx.rotate(swordAngle); if (!player.isDisarmed) drawWeapon(ctx, player.swordShape, length, SWORD_WIDTH, player.swordColor); ctx.restore();
 
     ctx.beginPath(); ctx.arc(player.x, player.y, PLAYER_RADIUS, 0, Math.PI * 2); ctx.fillStyle = playerColor; ctx.fill();
+    if (player.spawnProtectedUntil && Date.now() < player.spawnProtectedUntil) {
+        const protectionPulse = 0.7 + Math.sin(Date.now() / 90) * 0.2;
+        ctx.strokeStyle = `rgba(147, 197, 253, ${protectionPulse})`;
+        ctx.lineWidth = 3;
+        ctx.beginPath(); ctx.arc(player.x, player.y, PLAYER_RADIUS + 9, 0, Math.PI * 2); ctx.stroke();
+    }
     if(player.shield > 0) { ctx.strokeStyle = '#3b82f6'; ctx.lineWidth = 4; ctx.globalAlpha = 0.5 + (player.shield / (MAX_HP * 0.5)) * 0.5; ctx.beginPath(); ctx.arc(player.x, player.y, PLAYER_RADIUS + 6, 0, Math.PI * 2); ctx.stroke(); ctx.globalAlpha = 1; }
     if (player.isSlowed && Date.now() < player.slowEndTime) { ctx.fillStyle = 'rgba(99, 179, 237, 0.4)'; ctx.beginPath(); ctx.arc(player.x, player.y, PLAYER_RADIUS, 0, Math.PI * 2); ctx.fill(); }
     if (player.isBlocking) { ctx.save(); ctx.translate(player.x, player.y); ctx.rotate(player.angle); ctx.fillStyle = "rgba(100, 180, 255, 0.5)"; ctx.strokeStyle = "rgba(200, 220, 255, 0.8)"; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(PLAYER_RADIUS, 0, PLAYER_RADIUS * 1.5, -Math.PI / 3, Math.PI / 3); ctx.stroke(); ctx.fill(); ctx.restore(); }
@@ -1350,7 +1656,14 @@ function drawBoss() {
 function drawMinimap() {
     const scale = minimapCanvas.width / MAP_SIZE;
     minimapCtx.clearRect(0, 0, minimapCanvas.width, minimapCanvas.height);
-    minimapCtx.fillStyle = 'rgba(0, 0, 0, 0.3)'; minimapCtx.fillRect(0, 0, minimapCanvas.width, minimapCanvas.height);
+    minimapCtx.fillStyle = '#17566d'; minimapCtx.fillRect(0, 0, WATER_END_X * scale, minimapCanvas.height);
+    minimapCtx.fillStyle = '#4c1d1d'; minimapCtx.fillRect(WATER_END_X * scale, 0, (DESERT_START_X - WATER_END_X) * scale, minimapCanvas.height);
+    minimapCtx.fillStyle = '#b7792e'; minimapCtx.fillRect(DESERT_START_X * scale, 0, (MAP_SIZE - DESERT_START_X) * scale, minimapCanvas.height);
+    minimapCtx.fillStyle = 'rgba(0, 0, 0, 0.16)'; minimapCtx.fillRect(0, 0, minimapCanvas.width, minimapCanvas.height);
+    minimapCtx.fillStyle = 'rgba(95, 127, 76, 0.8)';
+    biomeFeatures.islands.forEach(island => { minimapCtx.beginPath(); minimapCtx.arc(island.x * scale, island.y * scale, Math.max(2, island.radius * scale), 0, Math.PI * 2); minimapCtx.fill(); });
+    minimapCtx.fillStyle = 'rgba(22, 138, 173, 0.9)';
+    biomeFeatures.oases.forEach(oasis => { minimapCtx.beginPath(); minimapCtx.arc(oasis.x * scale, oasis.y * scale, Math.max(2, oasis.radius * scale), 0, Math.PI * 2); minimapCtx.fill(); });
     minimapCtx.fillStyle = 'rgba(255, 215, 0, 0.2)';
     kothZones.forEach(zone => { minimapCtx.beginPath(); minimapCtx.arc(zone.x * scale, zone.y * scale, zone.radius * scale, 0, Math.PI * 2); minimapCtx.fill(); });
     minimapCtx.fillStyle = 'rgba(255, 100, 0, 0.5)';
@@ -1393,9 +1706,11 @@ function updatePlayerStatsUI() {
     if (!localPlayer || typeof localPlayer.swordTier === 'undefined' || !gameStarted || isDead) { playerStatsList.innerHTML = ''; return; }
     const swordTierInfo = SWORD_TIERS[localPlayer.swordTier]; if (!swordTierInfo) return;
     const now = Date.now(), dashCD = Math.min(1, (now - localPlayer.lastDashTime) / DASH_COOLDOWN), wwCD = Math.min(1, (now - localPlayer.lastWhirlwindTime) / WHIRLWIND_COOLDOWN);
+    const biomeName = { water: 'Western Shoals', wasteland: 'Ashen Waste', desert: 'Sunscorch' }[biomeAt(localPlayer.x)];
     playerStatsList.innerHTML = `
         <li class="flex justify-between"><span>Kills:</span> <span>${localPlayer.kills}</span></li>
         <li class="flex justify-between"><span>Online:</span> <span>${onlinePlayers}</span></li>
+        <li class="flex justify-between"><span>Region:</span> <span>${biomeName}</span></li>
         <li class="flex justify-between"><span>Armor:</span> <span>${Math.round(localPlayer.armor * 100)}%</span></li>
         <li class="flex justify-between"><span>Weapon:</span> <span style="color: ${swordTierInfo.color};">${swordTierInfo.name}</span></li>
         <li class="flex justify-between items-center"><span>Dash [Shift]:</span><div class="w-2/5 bg-gray-600 rounded-full h-2.5"><div class="bg-blue-400 h-2.5 rounded-full" style="width: ${dashCD * 100}%"></div></div></li>
