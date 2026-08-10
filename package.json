@@ -1,0 +1,26 @@
+{
+  "name": "8j8k",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node server/index.js",
+    "build": "vite build",
+    "check": "svelte-check --tsconfig ./jsconfig.json",
+    "test": "node --test",
+    "start": "node server/index.js"
+  },
+  "dependencies": {
+    "@sveltejs/vite-plugin-svelte": "latest",
+    "svelte": "latest",
+    "vite": "latest",
+    "ws": "latest"
+  },
+  "devDependencies": {
+    "svelte-check": "latest",
+    "typescript": "latest"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
