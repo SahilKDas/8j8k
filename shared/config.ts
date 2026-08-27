@@ -9,9 +9,15 @@ export const BASE_DAMAGE = 22;
 export const BASE_SWORD_REACH = 92;
 export const ATTACK_ARC = Math.PI * 0.72;
 export const ATTACK_COOLDOWN = 440;
+export const SWORD_SPIN_PER_TICK = Math.PI * 2 / SERVER_TICK_RATE;
 export const THROW_COOLDOWN = 1_500;
+export const SHURIKEN_SPEED = 720;
+export const SHURIKEN_DAMAGE = 14;
+export const SHURIKEN_COOLDOWN = 1_250;
+export const SHURIKEN_LIFETIME = 2_200;
 export const ABILITY_FALLBACK_COOLDOWN = 40_000;
 export const NPC_COUNT = 20;
+export const SHURIKEN_NPC_COUNT = 4;
 export const MAX_COINS = 650;
 export const MAX_CHAT_LENGTH = 120;
 

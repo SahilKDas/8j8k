@@ -21,6 +21,7 @@ export interface PlayerState extends Vector2 {
   name: string;
   color: string;
   angle: number;
+  swordAngle: number;
   health: number;
   maxHealth: number;
   coins: number;
@@ -32,6 +33,7 @@ export interface PlayerState extends Vector2 {
   abilityReadyAt: number;
   swordInHand: boolean;
   npc: boolean;
+  npcKind: 'brawler' | 'shuriken' | null;
   dead: boolean;
 }
 
@@ -51,6 +53,13 @@ export interface SwordState extends Vector2 {
   id: string;
   ownerId: string;
   angle: number;
+}
+
+export interface ShurikenState extends Vector2 {
+  id: string;
+  ownerId: string;
+  angle: number;
+  deflected: boolean;
 }
 
 export interface ChatMessage {
@@ -76,6 +85,7 @@ export interface Snapshot {
   coins: CoinState[];
   chests: ChestState[];
   swords: SwordState[];
+  shurikens: ShurikenState[];
   leaderboard: LeaderboardEntry[];
 }
 

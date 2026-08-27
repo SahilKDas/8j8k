@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import WebSocket from 'ws';
-import { MAX_COINS, NPC_COUNT, WORLD_HALF } from '../shared/config.js';
+import { MAX_COINS, NPC_COUNT, SHURIKEN_NPC_COUNT, SWORD_SPIN_PER_TICK, WORLD_HALF } from '../shared/config.js';
 import type { ServerMessage } from '../shared/types.js';
 import { GameRoom } from '../server/gameRoom.js';
 
@@ -23,9 +23,53 @@ function join(room: GameRoom, name = 'Tester<script>', color = '#60a5fa') {
 test('room starts with a full NPC roster and coin field', () => {
   const room = new GameRoom();
   assert.equal([...room.players.values()].filter((player) => player.npc).length, NPC_COUNT);
+  assert.equal([...room.players.values()].filter((player) => player.npcKind === 'shuriken').length, SHURIKEN_NPC_COUNT);
   assert.equal(room.coins.size, MAX_COINS);
   assert.ok(room.chests.size >= 30);
   room.stop();
+});
+
+test('authoritative sword spin advances exactly 360 degrees per server second', () => {
+  let now = 1_000;
+  const room = new GameRoom(() => now);
+  const { socket, id } = join(room, 'Spinner');
+  const aim = 0.25;
+  socket.emit('message', Buffer.from(JSON.stringify({ type: 'input', payload: { up: false, down: false, left: false, right: false, angle: aim, attacking: true, sequence: 1 } })));
+  now += 1_000 / 30;
+  room.tick(1 / 30);
+  const player = room.getSnapshotForTests(id)!.players.find((entry) => entry.id === id)!;
+  assert.ok(Math.abs(player.swordAngle - (aim + SWORD_SPIN_PER_TICK)) < 0.000_001);
+});
+
+test('shuriken NPCs fire ranged projectiles at nearby opponents', () => {
+  let now = 2_000;
+  const room = new GameRoom(() => now);
+  const { id } = join(room, 'Target');
+  const target = room.players.get(id)!;
+  const shooter = [...room.players.values()].find((player) => player.npcKind === 'shuriken')!;
+  shooter.x = 0; shooter.y = 0; shooter.targetId = id; shooter.lastShurikenAt = 0;
+  target.x = 500; target.y = 0;
+  room.tick(1 / 30);
+  assert.ok([...room.shurikens.values()].some((shuriken) => shuriken.ownerId === shooter.id));
+});
+
+test('an attacking sword deflects a nearby hostile shuriken', () => {
+  let now = 3_000;
+  const room = new GameRoom(() => now);
+  const { socket, id } = join(room, 'Defender');
+  const defender = room.players.get(id)!;
+  defender.x = 0; defender.y = 0;
+  socket.emit('message', Buffer.from(JSON.stringify({ type: 'input', payload: { up: false, down: false, left: false, right: false, angle: 0, attacking: true, sequence: 1 } })));
+  room.shurikens.set('test-shuriken', {
+    id: 'test-shuriken', ownerId: 'npc-7', x: 62, y: 8, angle: Math.PI,
+    vx: 0, vy: 0, bornAt: now, damage: 14, deflected: false, lastDeflectedAt: 0
+  });
+  now += 1_000 / 30;
+  room.tick(1 / 30);
+  const shuriken = room.shurikens.get('test-shuriken')!;
+  assert.equal(shuriken.ownerId, id);
+  assert.equal(shuriken.deflected, true);
+  assert.ok(shuriken.vx > 0);
 });
 
 test('joining returns a welcome snapshot with a sanitized player', () => {

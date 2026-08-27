@@ -4,12 +4,13 @@ import {
   ATTACK_ARC, ATTACK_COOLDOWN, BASE_DAMAGE, BASE_HEALTH, BASE_SPEED,
   BASE_SWORD_REACH, CHEST_LIMITS, CHEST_STATS, LEVELS, MAX_CHAT_LENGTH,
   MAX_COINS, NPC_COUNT, PLAYER_RADIUS, SERVER_TICK_RATE, SNAPSHOT_RATE,
-  THROW_COOLDOWN, WORLD_HALF
+  SHURIKEN_COOLDOWN, SHURIKEN_DAMAGE, SHURIKEN_LIFETIME, SHURIKEN_NPC_COUNT,
+  SHURIKEN_SPEED, SWORD_SPIN_PER_TICK, THROW_COOLDOWN, WORLD_HALF
 } from '../shared/config.js';
 import { EVOLUTIONS, getAvailableEvolutions, getStats } from '../shared/evolutions.js';
 import type {
   ChatMessage, ChestRarity, ChestState, ClientMessage, CoinState, EvolutionName,
-  MovementInput, PlayerState, ServerMessage, Snapshot, SwordState
+  MovementInput, PlayerState, ServerMessage, ShurikenState, Snapshot, SwordState
 } from '../shared/types.js';
 
 interface InternalPlayer extends PlayerState {
@@ -19,6 +20,7 @@ interface InternalPlayer extends PlayerState {
   lastDamagedAt: number;
   lastRegenAt: number;
   lastThrowAt: number;
+  lastShurikenAt: number;
   respawnAt: number;
   targetId?: string;
   wanderAngle: number;
@@ -31,6 +33,14 @@ interface InternalSword extends SwordState {
   damage: number;
 }
 
+interface InternalShuriken extends ShurikenState {
+  vx: number;
+  vy: number;
+  bornAt: number;
+  damage: number;
+  lastDeflectedAt: number;
+}
+
 const blankInput = (): MovementInput => ({
   up: false, down: false, left: false, right: false,
   angle: 0, attacking: false, sequence: 0
@@ -40,12 +50,19 @@ const clamp = (value: number, min: number, max: number) => Math.max(min, Math.mi
 const distanceSquared = (a: { x: number; y: number }, b: { x: number; y: number }) => (a.x - b.x) ** 2 + (a.y - b.y) ** 2;
 const randomBetween = (min: number, max: number) => min + Math.random() * (max - min);
 const normalizeAngle = (angle: number) => Math.atan2(Math.sin(angle), Math.cos(angle));
+const distanceToSegmentSquared = (point: { x: number; y: number }, start: { x: number; y: number }, end: { x: number; y: number }) => {
+  const lengthSquared = distanceSquared(start, end);
+  if (lengthSquared === 0) return distanceSquared(point, start);
+  const amount = clamp(((point.x - start.x) * (end.x - start.x) + (point.y - start.y) * (end.y - start.y)) / lengthSquared, 0, 1);
+  return distanceSquared(point, { x: start.x + amount * (end.x - start.x), y: start.y + amount * (end.y - start.y) });
+};
 
 export class GameRoom {
   readonly players = new Map<string, InternalPlayer>();
   readonly coins = new Map<string, CoinState>();
   readonly chests = new Map<string, ChestState>();
   readonly swords = new Map<string, InternalSword>();
+  readonly shurikens = new Map<string, InternalShuriken>();
   private timer?: NodeJS.Timeout;
   private tickNumber = 0;
   private lastTickAt = Date.now();
@@ -143,6 +160,7 @@ export class GameRoom {
       this.updatePlayer(player, delta, time);
     }
     this.updateSwords(delta, time);
+    this.updateShurikens(delta, time);
 
     if (time - this.lastSnapshotAt >= 1000 / SNAPSHOT_RATE) {
       for (const player of this.players.values()) {
@@ -157,11 +175,11 @@ export class GameRoom {
     const name = npc ? String(rawName) : this.cleanName(rawName);
     return {
       id, name, color: this.cleanColor(rawColor), x: position.x, y: position.y,
-      angle: 0, health: BASE_HEALTH, maxHealth: BASE_HEALTH, coins: 0, kills: 0,
+      angle: 0, swordAngle: 0, health: BASE_HEALTH, maxHealth: BASE_HEALTH, coins: 0, kills: 0,
       level: 1, evolution: null, attacking: false, abilityEndsAt: 0,
-      abilityReadyAt: 0, swordInHand: true, npc, dead: false, input: blankInput(),
+      abilityReadyAt: 0, swordInHand: true, npc, npcKind: npc ? 'brawler' : null, dead: false, input: blankInput(),
       socket, lastAttackAt: 0, lastDamagedAt: 0, lastRegenAt: 0,
-      lastThrowAt: 0, respawnAt: 0, wanderAngle: Math.random() * Math.PI * 2
+      lastThrowAt: 0, lastShurikenAt: 0, respawnAt: 0, wanderAngle: Math.random() * Math.PI * 2
     };
   }
 
@@ -170,7 +188,12 @@ export class GameRoom {
     const colors = ['#38bdf8', '#fb7185', '#4ade80', '#facc15', '#c084fc', '#2dd4bf', '#f97316', '#a3e635'];
     const id = `npc-${index}`;
     const player = this.createPlayer(id, `${names[index % names.length]}-${index + 1}`, colors[index % colors.length], true, null);
-    if (index % 2 === 0) player.evolution = 'berserker';
+    if (index < SHURIKEN_NPC_COUNT) {
+      player.npcKind = 'shuriken';
+      player.name = `Kage-${index + 1}`;
+      player.color = '#a78bfa';
+      player.evolution = 'archer';
+    } else if (index % 2 === 0) player.evolution = 'berserker';
     else player.evolution = 'tank';
     player.coins = 800 + index * 55;
     this.refreshDerivedStats(player);
@@ -192,6 +215,17 @@ export class GameRoom {
     }
     const angle = Math.atan2(activeTarget.y - npc.y, activeTarget.x - npc.x);
     const dist = Math.sqrt(distanceSquared(npc, activeTarget));
+    if (npc.npcKind === 'shuriken') {
+      const orbitDirection = Number(npc.id.slice(-1)) % 2 === 0 ? 1 : -1;
+      const movementAngle = dist > 670 ? angle : dist < 350 ? angle + Math.PI : angle + orbitDirection * Math.PI / 2;
+      npc.input = {
+        up: Math.sin(movementAngle) < -0.25, down: Math.sin(movementAngle) > 0.25,
+        left: Math.cos(movementAngle) < -0.25, right: Math.cos(movementAngle) > 0.25,
+        angle, attacking: false, sequence: time
+      };
+      if (dist < 1_050 && time - npc.lastShurikenAt >= SHURIKEN_COOLDOWN) this.throwShuriken(npc, activeTarget, time);
+      return;
+    }
     npc.input = { up: Math.sin(angle) < -0.25, down: Math.sin(angle) > 0.25, left: Math.cos(angle) < -0.25, right: Math.cos(angle) > 0.25, angle, attacking: dist < 135, sequence: time };
     if (time >= npc.abilityReadyAt && Math.random() < 0.006) this.activateAbility(npc);
     if (dist > 260 && dist < 700 && Math.random() < 0.018) this.throwSword(npc);
@@ -211,8 +245,13 @@ export class GameRoom {
     const speed = BASE_SPEED * stats.speed * delta;
     player.x = clamp(player.x + (dx / magnitude) * speed, -WORLD_HALF + PLAYER_RADIUS, WORLD_HALF - PLAYER_RADIUS);
     player.y = clamp(player.y + (dy / magnitude) * speed, -WORLD_HALF + PLAYER_RADIUS, WORLD_HALF - PLAYER_RADIUS);
+    const wasAttacking = player.attacking;
     player.angle = player.input.angle;
-    player.attacking = player.input.attacking;
+    player.attacking = player.input.attacking && player.swordInHand;
+    if (player.attacking) {
+      if (!wasAttacking) player.swordAngle = player.angle;
+      player.swordAngle = normalizeAngle(player.swordAngle + SWORD_SPIN_PER_TICK);
+    } else player.swordAngle = player.angle;
 
     if (player.attacking && time - player.lastAttackAt >= ATTACK_COOLDOWN / stats.attackSpeed) {
       player.lastAttackAt = time;
@@ -233,13 +272,13 @@ export class GameRoom {
       const dist = Math.sqrt(distanceSquared(attacker, target));
       if (dist > reach + PLAYER_RADIUS * 1.5) continue;
       const targetAngle = Math.atan2(target.y - attacker.y, target.x - attacker.x);
-      if (Math.abs(normalizeAngle(targetAngle - attacker.angle)) > ATTACK_ARC / 2) continue;
+      if (Math.abs(normalizeAngle(targetAngle - attacker.swordAngle)) > ATTACK_ARC / 2) continue;
       this.damagePlayer(target, damage, attacker, power);
     }
     for (const chest of [...this.chests.values()]) {
       if (distanceSquared(attacker, chest) > (reach + 45) ** 2) continue;
       const targetAngle = Math.atan2(chest.y - attacker.y, chest.x - attacker.x);
-      if (Math.abs(normalizeAngle(targetAngle - attacker.angle)) > ATTACK_ARC / 2) continue;
+      if (Math.abs(normalizeAngle(targetAngle - attacker.swordAngle)) > ATTACK_ARC / 2) continue;
       const bonus = attacker.evolution === 'lumberjack' ? 2 : 1;
       chest.health -= bonus;
       if (chest.health <= 0) this.openChest(chest, attacker);
@@ -326,6 +365,56 @@ export class GameRoom {
     }
   }
 
+  private throwShuriken(npc: InternalPlayer, target: InternalPlayer, time: number): void {
+    npc.lastShurikenAt = time;
+    const angle = Math.atan2(target.y - npc.y, target.x - npc.x);
+    const id = randomUUID();
+    this.shurikens.set(id, {
+      id, ownerId: npc.id,
+      x: npc.x + Math.cos(angle) * 46, y: npc.y + Math.sin(angle) * 46,
+      angle, vx: Math.cos(angle) * SHURIKEN_SPEED, vy: Math.sin(angle) * SHURIKEN_SPEED,
+      bornAt: time, damage: SHURIKEN_DAMAGE, deflected: false, lastDeflectedAt: 0
+    });
+  }
+
+  private updateShurikens(delta: number, time: number): void {
+    for (const shuriken of [...this.shurikens.values()]) {
+      shuriken.x += shuriken.vx * delta;
+      shuriken.y += shuriken.vy * delta;
+      shuriken.angle = normalizeAngle(shuriken.angle + Math.PI * 6 * delta);
+      let deflectedThisTick = false;
+
+      for (const defender of this.players.values()) {
+        if (defender.dead || !defender.attacking || !defender.swordInHand || defender.id === shuriken.ownerId || time - shuriken.lastDeflectedAt < 140) continue;
+        const directionX = Math.cos(defender.swordAngle);
+        const directionY = Math.sin(defender.swordAngle);
+        const handle = { x: defender.x + directionX * (PLAYER_RADIUS + 4), y: defender.y + directionY * (PLAYER_RADIUS + 4) };
+        const tip = { x: defender.x + directionX * (BASE_SWORD_REACH + 18), y: defender.y + directionY * (BASE_SWORD_REACH + 18) };
+        if (distanceToSegmentSquared(shuriken, handle, tip) > 30 ** 2) continue;
+        shuriken.ownerId = defender.id;
+        shuriken.vx = directionX * SHURIKEN_SPEED * 1.22;
+        shuriken.vy = directionY * SHURIKEN_SPEED * 1.22;
+        shuriken.angle = defender.swordAngle;
+        shuriken.damage = SHURIKEN_DAMAGE * 1.45;
+        shuriken.deflected = true;
+        shuriken.lastDeflectedAt = time;
+        deflectedThisTick = true;
+        break;
+      }
+      if (deflectedThisTick) continue;
+
+      const owner = this.players.get(shuriken.ownerId);
+      let removed = false;
+      for (const target of this.players.values()) {
+        if (!owner || target.id === owner.id || target.dead || distanceSquared(target, shuriken) > (PLAYER_RADIUS + 10) ** 2) continue;
+        this.damagePlayer(target, shuriken.damage, owner, 0.75);
+        removed = true;
+        break;
+      }
+      if (removed || time - shuriken.bornAt > SHURIKEN_LIFETIME || Math.abs(shuriken.x) > WORLD_HALF || Math.abs(shuriken.y) > WORLD_HALF) this.shurikens.delete(shuriken.id);
+    }
+  }
+
   private activateAbility(player: InternalPlayer): void {
     if (!player.evolution || player.dead || this.now() < player.abilityReadyAt) return;
     const definition = EVOLUTIONS[player.evolution];
@@ -353,7 +442,7 @@ export class GameRoom {
   private respawn(player: InternalPlayer): void {
     const position = this.spawnPoint();
     player.x = position.x; player.y = position.y; player.dead = false;
-    player.swordInHand = true; player.attacking = false; player.input = blankInput();
+    player.swordInHand = true; player.attacking = false; player.swordAngle = player.angle; player.input = blankInput();
     this.refreshDerivedStats(player); player.health = player.maxHealth;
   }
 
@@ -417,6 +506,7 @@ export class GameRoom {
       coins: [...this.coins.values()].filter((coin) => distanceSquared(viewer, coin) <= visibility),
       chests: [...this.chests.values()].filter((chest) => distanceSquared(viewer, chest) <= visibility),
       swords: [...this.swords.values()].filter((sword) => distanceSquared(viewer, sword) <= visibility).map(({ vx: _vx, vy: _vy, bornAt: _bornAt, damage: _damage, ...sword }) => sword),
+      shurikens: [...this.shurikens.values()].filter((shuriken) => distanceSquared(viewer, shuriken) <= visibility).map(({ vx: _vx, vy: _vy, bornAt: _bornAt, damage: _damage, lastDeflectedAt: _lastDeflectedAt, ...shuriken }) => shuriken),
       leaderboard: [...this.players.values()].filter((player) => !player.dead).sort((a, b) => b.coins - a.coins).slice(0, 10).map(({ id, name, coins, kills }) => ({ id, name, coins, kills }))
     };
   }
@@ -449,7 +539,7 @@ export class GameRoom {
 }
 
 function stripInternalPlayer(player: InternalPlayer): PlayerState {
-  const { input: _input, socket: _socket, lastAttackAt: _lastAttackAt, lastDamagedAt: _lastDamagedAt, lastRegenAt: _lastRegenAt, lastThrowAt: _lastThrowAt, respawnAt: _respawnAt, targetId: _targetId, wanderAngle: _wanderAngle, ...state } = player;
+  const { input: _input, socket: _socket, lastAttackAt: _lastAttackAt, lastDamagedAt: _lastDamagedAt, lastRegenAt: _lastRegenAt, lastThrowAt: _lastThrowAt, lastShurikenAt: _lastShurikenAt, respawnAt: _respawnAt, targetId: _targetId, wanderAngle: _wanderAngle, ...state } = player;
   return state;
 }
 

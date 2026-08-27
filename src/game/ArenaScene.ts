@@ -2,7 +2,7 @@ import Phaser from 'phaser';
 import { get } from 'svelte/store';
 import { BASE_SPEED, CHEST_STATS, PLAYER_RADIUS, WORLD_HALF, WORLD_SIZE } from '../../shared/config.js';
 import { EVOLUTIONS, getStats } from '../../shared/evolutions.js';
-import type { ChestRarity, ChestState, CoinState, MovementInput, PlayerState, Snapshot, SwordState } from '../../shared/types.js';
+import type { ChestRarity, ChestState, CoinState, MovementInput, PlayerState, ShurikenState, Snapshot, SwordState } from '../../shared/types.js';
 import { gameSocket } from '../lib/socket.js';
 import { ui } from '../lib/state.js';
 
@@ -20,10 +20,22 @@ interface ActorView {
   health: Phaser.GameObjects.Rectangle;
   target: PlayerState;
   displayAngle: number;
+  spinAngle: number;
   velocityX: number;
   velocityY: number;
   snapshotAt: number;
   wasAttacking: boolean;
+  renderWasAttacking: boolean;
+}
+
+interface ShurikenView {
+  image: Phaser.GameObjects.Image;
+  targetX: number;
+  targetY: number;
+  velocityX: number;
+  velocityY: number;
+  snapshotAt: number;
+  deflected: boolean;
 }
 
 const colorNumber = (color: string): number => Phaser.Display.Color.HexStringToColor(color).color;
@@ -34,6 +46,7 @@ export class ArenaScene extends Phaser.Scene {
   private coinViews = new Map<string, Phaser.GameObjects.Image>();
   private chestViews = new Map<string, Phaser.GameObjects.Container>();
   private swordViews = new Map<string, Phaser.GameObjects.Image>();
+  private shurikenViews = new Map<string, ShurikenView>();
   private latest?: Snapshot;
   private selfId = '';
   private sequence = 0;
@@ -45,6 +58,10 @@ export class ArenaScene extends Phaser.Scene {
   private currentInput = blankInput();
 
   constructor() { super({ key: 'arena' }); }
+
+  preload(): void {
+    this.load.svg('sword', '/sword.svg');
+  }
 
   create(): void {
     this.cameras.main.setBackgroundColor('#071520');
@@ -70,6 +87,7 @@ export class ArenaScene extends Phaser.Scene {
     const frameSeconds = Math.min(delta / 1000, 0.05);
     this.currentInput = this.readInput();
     for (const [id, view] of this.actors) this.updateActor(view, time, frameSeconds, id === this.selfId);
+    this.updateShurikenViews(time, frameSeconds);
     if (time - this.lastInputAt > 33) {
       gameSocket.input({ ...this.currentInput, sequence: ++this.sequence });
       this.lastInputAt = time;
@@ -90,13 +108,14 @@ export class ArenaScene extends Phaser.Scene {
     graphics.generateTexture('coin', 30, 26);
     graphics.clear();
 
-    graphics.fillStyle(0x111827, 0.35).fillRoundedRect(8, 12, 95, 9, 4);
-    graphics.fillStyle(0x70431f, 1).fillRoundedRect(4, 9, 25, 12, 5);
-    graphics.fillStyle(0xd6a65c, 1).fillRect(22, 6, 8, 18);
-    graphics.fillStyle(0xd9e5f2, 1).fillTriangle(27, 4, 104, 14, 27, 24);
-    graphics.fillStyle(0xf8fbff, 0.95).fillTriangle(31, 7, 100, 14, 31, 14);
-    graphics.lineStyle(2, 0x6f8296, 0.9).lineBetween(28, 23, 104, 14);
-    graphics.generateTexture('blade', 108, 28);
+    graphics.fillStyle(0x05070b, 0.28).fillCircle(18, 19, 14);
+    graphics.fillStyle(0xb8c2d1, 1).fillTriangle(18, 0, 23, 14, 13, 14);
+    graphics.fillTriangle(36, 18, 22, 23, 22, 13);
+    graphics.fillTriangle(18, 36, 13, 22, 23, 22);
+    graphics.fillTriangle(0, 18, 14, 13, 14, 23);
+    graphics.fillStyle(0x475569, 1).fillCircle(18, 18, 7);
+    graphics.fillStyle(0xe2e8f0, 0.85).fillCircle(16, 16, 2);
+    graphics.generateTexture('shuriken', 36, 36);
     graphics.clear();
 
     const rarities: ChestRarity[] = ['normal', 'uncommon', 'rare', 'epic', 'legendary', 'mythical'];
@@ -205,6 +224,7 @@ export class ArenaScene extends Phaser.Scene {
     this.syncCoins(snapshot.coins);
     this.syncChests(snapshot.chests);
     this.syncSwords(snapshot.swords);
+    this.syncShurikens(snapshot.shurikens);
   }
 
   private syncPlayers(players: PlayerState[]): void {
@@ -235,11 +255,11 @@ export class ArenaScene extends Phaser.Scene {
     const color = colorNumber(player.color);
     const shadow = this.add.ellipse(0, 13, 68, 33, 0x020617, 0.32);
     const aura = this.add.circle(0, 0, PLAYER_RADIUS + 11, color, 0.12).setStrokeStyle(2, color, 0.22);
-    const sword = this.add.image(2, 0, 'blade').setOrigin(0.17, 0.5);
+    const sword = this.add.image(PLAYER_RADIUS + 8, 0, 'sword').setOrigin(0.5, 0.84).setScale(0.74);
     const ring = this.add.circle(0, 0, PLAYER_RADIUS + 5, 0x0b1220, 0.94).setStrokeStyle(2, player.npc ? 0x64748b : 0xeaf7ff, 0.92);
     const body = this.add.circle(0, 0, PLAYER_RADIUS, color);
     const core = this.add.circle(-7, -8, PLAYER_RADIUS * 0.5, 0xffffff, 0.13);
-    const emblem = this.add.text(0, 1, player.evolution ? player.evolution.slice(0, 1).toUpperCase() : '•', {
+    const emblem = this.add.text(0, 1, player.npcKind === 'shuriken' ? '✦' : player.evolution ? player.evolution.slice(0, 1).toUpperCase() : '•', {
       color: '#ffffff', fontFamily: 'Segoe UI Variable, Segoe UI, sans-serif', fontSize: '15px', fontStyle: 'bold'
     }).setOrigin(0.5).setAlpha(player.npc ? 0.62 : 0.9);
     const name = this.add.text(0, -55, player.name, {
@@ -248,7 +268,7 @@ export class ArenaScene extends Phaser.Scene {
     const healthBack = this.add.rectangle(0, -39, 62, 6, 0x020617, 0.82).setStrokeStyle(1, 0xffffff, 0.18);
     const health = this.add.rectangle(-30, -39, 60, 4, 0x52e6a0).setOrigin(0, 0.5);
     const container = this.add.container(player.x, player.y, [shadow, aura, sword, ring, body, core, emblem, healthBack, health, name]).setDepth(player.id === this.selfId ? 20 : 10);
-    return { container, shadow, aura, ring, body, core, emblem, sword, name, healthBack, health, target: player, displayAngle: player.angle, velocityX: 0, velocityY: 0, snapshotAt: this.time.now, wasAttacking: false };
+    return { container, shadow, aura, ring, body, core, emblem, sword, name, healthBack, health, target: player, displayAngle: player.angle, spinAngle: player.swordAngle, velocityX: 0, velocityY: 0, snapshotAt: this.time.now, wasAttacking: false, renderWasAttacking: false };
   }
 
   private updateActor(view: ActorView, time: number, delta: number, isSelf: boolean): void {
@@ -266,11 +286,18 @@ export class ArenaScene extends Phaser.Scene {
     const wantedAngle = isSelf ? this.currentInput.angle : target.angle;
     const angleFollow = 1 - Math.exp(-(isSelf ? 28 : 18) * delta);
     view.displayAngle += shortestAngle(wantedAngle - view.displayAngle) * angleFollow;
-    const attacking = isSelf ? this.currentInput.attacking : target.attacking;
-    const speed = getStats(target.evolution, target.abilityEndsAt > Date.now()).attackSpeed;
-    const phase = (time % (440 / speed)) / (440 / speed);
-    const slash = attacking ? -0.62 + Math.sin(phase * Math.PI) * 1.42 : 0;
-    view.sword.rotation = view.displayAngle + slash;
+    const attacking = (isSelf ? this.currentInput.attacking : target.attacking) && target.swordInHand;
+    if (attacking) {
+      if (!view.renderWasAttacking) view.spinAngle = view.displayAngle;
+      view.spinAngle += Math.PI * 2 * delta;
+      if (!isSelf) view.spinAngle += shortestAngle(target.swordAngle - view.spinAngle) * (1 - Math.exp(-7 * delta));
+    } else view.spinAngle += shortestAngle(view.displayAngle - view.spinAngle) * (1 - Math.exp(-24 * delta));
+    view.renderWasAttacking = attacking;
+    const bladeAngle = attacking ? view.spinAngle : view.displayAngle;
+    const scale = target.evolution ? getVisualScale(target.evolution) : 1;
+    const handleRadius = PLAYER_RADIUS * scale + 9;
+    view.sword.setPosition(Math.cos(bladeAngle) * handleRadius, Math.sin(bladeAngle) * handleRadius);
+    view.sword.rotation = bladeAngle + Math.PI / 2;
     view.sword.setVisible(target.swordInHand);
 
     const color = colorNumber(target.color);
@@ -281,13 +308,12 @@ export class ArenaScene extends Phaser.Scene {
     view.ring.setStrokeStyle(2.5, target.npc ? 0x64748b : 0xeaf7ff, 0.9);
     view.health.width = 60 * Math.max(0, target.health / target.maxHealth);
     view.health.setFillStyle(target.health / target.maxHealth < 0.3 ? 0xff5c6c : 0x52e6a0);
-    const scale = target.evolution ? getVisualScale(target.evolution) : 1;
     view.body.setScale(scale);
     view.core.setScale(scale);
     view.ring.setScale(scale);
     view.aura.setScale(scale + Math.sin(time / 360) * 0.025);
-    view.emblem.setText(target.evolution ? target.evolution.slice(0, 1).toUpperCase() : '•');
-    view.sword.setTint(target.evolution ? classColor : 0xffffff);
+    view.emblem.setText(target.npcKind === 'shuriken' ? '✦' : target.evolution ? target.evolution.slice(0, 1).toUpperCase() : '•');
+    view.sword.setScale(0.74 * Math.min(scale, 1.22));
     view.shadow.setScale(0.92 + Math.sin(time / 280 + target.x) * 0.02, 1);
   }
 
@@ -350,10 +376,47 @@ export class ArenaScene extends Phaser.Scene {
     for (const sword of swords) {
       let view = this.swordViews.get(sword.id);
       if (!view) {
-        view = this.add.image(sword.x, sword.y, 'blade').setOrigin(0.5).setDepth(30).setScale(0.78);
+        view = this.add.image(sword.x, sword.y, 'sword').setOrigin(0.5).setDepth(30).setScale(0.58);
         this.swordViews.set(sword.id, view);
       }
-      view.setPosition(sword.x, sword.y).setRotation(sword.angle);
+      view.setPosition(sword.x, sword.y).setRotation(sword.angle + Math.PI / 2);
+    }
+  }
+
+  private syncShurikens(shurikens: ShurikenState[]): void {
+    const incoming = new Set(shurikens.map((shuriken) => shuriken.id));
+    for (const [id, view] of this.shurikenViews) {
+      if (!incoming.has(id)) { view.image.destroy(); this.shurikenViews.delete(id); }
+    }
+    for (const shuriken of shurikens) {
+      let view = this.shurikenViews.get(shuriken.id);
+      if (!view) {
+        const image = this.add.image(shuriken.x, shuriken.y, 'shuriken').setDepth(31).setScale(0.82);
+        view = { image, targetX: shuriken.x, targetY: shuriken.y, velocityX: 0, velocityY: 0, snapshotAt: this.time.now, deflected: shuriken.deflected };
+        this.shurikenViews.set(shuriken.id, view);
+      } else {
+        const elapsed = Math.max(16, this.time.now - view.snapshotAt) / 1000;
+        view.velocityX = (shuriken.x - view.targetX) / elapsed;
+        view.velocityY = (shuriken.y - view.targetY) / elapsed;
+        view.targetX = shuriken.x;
+        view.targetY = shuriken.y;
+        view.snapshotAt = this.time.now;
+      }
+      view.deflected = shuriken.deflected;
+      view.image.setTint(shuriken.deflected ? 0x67e8f9 : 0xffffff);
+    }
+  }
+
+  private updateShurikenViews(time: number, delta: number): void {
+    for (const view of this.shurikenViews.values()) {
+      const extrapolation = Math.min(0.06, Math.max(0, (time - view.snapshotAt) / 1000));
+      const desiredX = view.targetX + view.velocityX * extrapolation;
+      const desiredY = view.targetY + view.velocityY * extrapolation;
+      const follow = 1 - Math.exp(-22 * delta);
+      view.image.x = Phaser.Math.Linear(view.image.x, desiredX, follow);
+      view.image.y = Phaser.Math.Linear(view.image.y, desiredY, follow);
+      view.image.rotation += Math.PI * 6 * delta;
+      view.image.setScale(0.82 + Math.sin(time / 70) * 0.035);
     }
   }
 
@@ -363,7 +426,7 @@ export class ArenaScene extends Phaser.Scene {
     const particleCount = quality === 'high' ? 7 : quality === 'balanced' ? 4 : 1;
     const arc = this.add.graphics().setDepth(34);
     arc.lineStyle(7, color, 0.38).beginPath();
-    arc.arc(player.x, player.y, 78, player.angle - 0.72, player.angle + 0.72).strokePath();
+    arc.arc(player.x, player.y, 92, player.swordAngle - 0.82, player.swordAngle + 0.82).strokePath();
     this.tweens.add({ targets: arc, alpha: 0, scale: 1.12, duration: 190, ease: 'Quad.Out', onComplete: () => arc.destroy() });
     for (let index = 0; index < particleCount; index += 1) {
       const spark = this.add.circle(player.x, player.y, 2 + index * 0.35, color, 0.72).setDepth(35);
