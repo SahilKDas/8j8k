@@ -1,103 +1,174 @@
-<script>
-    import { onMount } from 'svelte';
-    import { createGame } from './lib/gameEngine.js';
+<script lang="ts">
+  import { tick } from 'svelte';
+  import { WORLD_HALF, WORLD_SIZE } from '../shared/config.js';
+  import { EVOLUTIONS } from '../shared/evolutions.js';
+  import GameCanvas from './components/GameCanvas.svelte';
+  import { gameSocket } from './lib/socket.js';
+  import { evolutionChoices, setSettings, ui } from './lib/state.js';
 
-    onMount(() => {
-        const game = createGame();
-        return () => game.destroy();
-    });
+  const colors = ['#f8fafc', '#60a5fa', '#22c55e', '#f97316', '#e879f9', '#facc15', '#fb7185', '#2dd4bf'];
+  let name = typeof localStorage === 'undefined' ? '' : localStorage.getItem('8j8k-name') || '';
+  let color = typeof localStorage === 'undefined' ? colors[0] : localStorage.getItem('8j8k-color') || colors[0];
+  let chatText = '';
+  let chatInput: HTMLInputElement;
+
+  async function play(): Promise<void> {
+    const cleanName = name.trim().slice(0, 18) || 'Wanderer';
+    localStorage.setItem('8j8k-name', cleanName);
+    localStorage.setItem('8j8k-color', color);
+    try { await gameSocket.join(cleanName, color); }
+    catch { ui.update((state) => ({ ...state, screen: 'menu' })); }
+  }
+
+  async function openChat(): Promise<void> {
+    ui.update((state) => ({ ...state, chatOpen: true }));
+    await tick(); chatInput?.focus();
+  }
+
+  function submitChat(): void {
+    if (chatText.trim()) gameSocket.chat(chatText);
+    chatText = '';
+    ui.update((state) => ({ ...state, chatOpen: false }));
+  }
+
+  function keydown(event: KeyboardEvent): void {
+    if (event.key === 'Enter' && $ui.screen === 'playing' && !$ui.self?.dead) {
+      event.preventDefault();
+      if ($ui.chatOpen) submitChat(); else void openChat();
+    }
+    if (event.key === 'Escape') ui.update((state) => ({ ...state, chatOpen: false, showHelp: false, showSettings: false, showShop: false }));
+  }
+
+  const minimapPosition = (value: number) => `${((value + WORLD_HALF) / WORLD_SIZE) * 100}%`;
+  const classLabel = (name: keyof typeof EVOLUTIONS | null | undefined) => name ? EVOLUTIONS[name].label : 'Unbound';
+  const abilityProgress = () => {
+    if (!$ui.self?.evolution) return 0;
+    const definition = EVOLUTIONS[$ui.self.evolution];
+    return Math.max(0, Math.min(1, 1 - ($ui.self.abilityReadyAt - Date.now()) / definition.abilityCooldown));
+  };
 </script>
 
-<div class="w-screen h-screen">
-    <canvas id="gameCanvas"></canvas>
+<svelte:window onkeydown={keydown} />
 
-    <div id="blood-moon-overlay" class="hidden absolute inset-0 w-full h-full bg-red-900 bg-opacity-30 pointer-events-none transition-opacity duration-1000"></div>
-    <div id="blood-moon-announcement-container" class="hidden absolute top-1/3 left-1/2 -translate-x-1/2 w-full flex justify-center pointer-events-none">
-        <h1 id="blood-moon-announcement" class="text-6xl font-bold text-red-400" style="text-shadow: 0 0 15px #ff0000;">The Blood Moon is Rising</h1>
-    </div>
+<main class:in-game={$ui.screen === 'playing'}>
+  <GameCanvas />
 
-    <div id="minimap-container" class="absolute bottom-4 right-4 glass-panel p-1 rounded-2xl shadow-2xl">
-        <canvas id="minimapCanvas"></canvas>
-    </div>
-
-    <div id="ui-container" class="w-full h-full p-4 md:p-8 flex flex-col justify-between">
-        <div class="flex justify-between items-start gap-4">
-            <div class="flex flex-col gap-4">
-                <div id="upgrades" class="glass-panel p-4 w-64 text-white shadow-lg">
-                    <h2 class="text-xl font-bold border-b border-gray-500 pb-2 mb-2">Upgrades</h2>
-                    <ul id="upgrades-list" class="space-y-2"></ul>
-                </div>
-                <div id="leaderboard" class="glass-panel p-4 w-64 text-white shadow-lg">
-                    <h2 class="text-xl font-bold border-b border-gray-500 pb-2 mb-2">Leaderboard</h2>
-                    <ul id="leaderboard-list"></ul>
-                </div>
-            </div>
-
-            <div id="boss-ui" class="hidden glass-panel p-3 w-1/3 text-white shadow-lg absolute left-1/2 -translate-x-1/2">
-                <h2 id="boss-name" class="text-xl font-bold text-center text-red-400"><span class="sr-only">Boss</span></h2>
-                <div class="w-full bg-gray-700 rounded-full h-4 mt-2 border-2 border-red-900">
-                    <div id="boss-hp-bar" class="bg-red-500 h-full rounded-full transition-all duration-300"></div>
-                </div>
-            </div>
-
-            <div id="player-stats" class="glass-panel p-4 w-64 text-white shadow-lg">
-                <h2 class="text-xl font-bold border-b border-gray-500 pb-2 mb-2">My Stats</h2>
-                <ul id="player-stats-list" class="text-sm space-y-2"></ul>
-            </div>
+  {#if $ui.screen === 'playing' && $ui.self}
+    <section class="hud" aria-label="Game interface">
+      <header class="topbar glass">
+        <div class="brand"><span class="brand-mark">8</span><strong>8j8k</strong><small>Giedi arena</small></div>
+        <div class="server"><span class:online={$ui.connection === 'online'}></span>{$ui.connection} · {$ui.ping} ms · {$ui.fps} fps</div>
+        <div class="top-actions">
+          <button onclick={() => ui.update((state) => ({ ...state, showHelp: true }))}>?</button>
+          <button onclick={() => ui.update((state) => ({ ...state, showSettings: true }))}>⚙</button>
         </div>
+      </header>
 
-        <div class="flex flex-col items-center gap-2">
-            <div id="score-display" class="glass-panel py-2 px-6 text-white text-2xl font-bold shadow-lg">Score: 0</div>
-            <div id="reset-map-container" class="hidden">
-                <button id="reset-map-button" class="ui-element glass-panel py-2 px-6 text-yellow-300 font-bold shadow-lg hover:bg-yellow-400 hover:text-black transition-colors">Reset Map</button>
-            </div>
+      <aside class="left-stack">
+        <div class="profile-card glass">
+          <div class="portrait" style={`--player-color:${$ui.self.color}`}><span>{$ui.self.level}</span></div>
+          <div><small>{$ui.self.evolution ? 'EVOLUTION' : 'FIGHTER'}</small><strong>{classLabel($ui.self.evolution)}</strong><span>{$ui.self.name}</span></div>
         </div>
-    </div>
+        <div class="stats glass">
+          <div><span>Coins</span><strong>◉ {Math.floor($ui.self.coins).toLocaleString()}</strong></div>
+          <div><span>Stabs</span><strong>⚔ {$ui.self.kills}</strong></div>
+          <div><span>Health</span><strong>{Math.ceil($ui.self.health)} / {Math.ceil($ui.self.maxHealth)}</strong></div>
+          <div class="health-track"><i style={`width:${Math.max(0, $ui.self.health / $ui.self.maxHealth * 100)}%`}></i></div>
+        </div>
+        <div class="leaderboard glass">
+          <h2>Leaderboard</h2>
+          <ol>
+            {#each $ui.snapshot?.leaderboard ?? [] as entry, index (entry.id)}
+              <li class:self={entry.id === $ui.self.id}><b>{index + 1}</b><span>{entry.name}</span><strong>{entry.coins.toLocaleString()}</strong></li>
+            {/each}
+          </ol>
+        </div>
+      </aside>
 
-    <div id="start-screen" class="absolute inset-0 w-full h-full flex justify-center items-center pointer-events-auto bg-black bg-opacity-70">
-        <div class="glass-panel p-8 rounded-lg text-center text-white shadow-2xl max-w-sm flex flex-col gap-4">
-            <h1 class="text-4xl font-bold">6j8k</h1>
-            <p class="text-gray-300">First to 14500 score resets the map! Use [Shift] to Dash. Some NPCs will fight in teams!</p>
-            <input type="text" id="name-input" placeholder="Your Name" class="ui-element w-full px-4 py-2 rounded-lg bg-gray-700 border border-gray-600 text-white focus:outline-none focus:ring-2 focus:ring-blue-500" />
-            <button id="start-button" class="ui-element w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-6 rounded-lg transition-transform transform hover:scale-105 shadow-lg">Play</button>
-            <button id="instructions-button" class="ui-element w-full bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded-lg transition-transform transform hover:scale-105 shadow-lg">How to Play</button>
+      <aside class="right-stack">
+        <div class="minimap glass" aria-label="Arena minimap">
+          <div class="map-biomes"><i></i><i></i><i></i></div>
+          {#each $ui.snapshot?.players ?? [] as fighter (fighter.id)}
+            <span class:self={fighter.id === $ui.self.id} class:npc={fighter.npc} class="map-dot" style={`left:${minimapPosition(fighter.x)};top:${minimapPosition(fighter.y)};--dot:${fighter.color}`} title={fighter.name}></span>
+          {/each}
+          <small>15K ARENA</small>
         </div>
-    </div>
+        <div class="ability-card glass">
+          <button class:ready={abilityProgress() >= 1} disabled={!$ui.self.evolution || abilityProgress() < 1} onclick={() => gameSocket.ability()}>
+            <span>E</span><strong>{$ui.self.evolution ? EVOLUTIONS[$ui.self.evolution].abilityName : 'Choose a class'}</strong>
+            <i><em style={`width:${abilityProgress() * 100}%`}></em></i>
+          </button>
+          <button class="throw" onclick={() => gameSocket.throwSword()}><span>Q</span><strong>Throw blade</strong></button>
+        </div>
+      </aside>
 
-    <div id="death-screen" class="hidden absolute inset-0 w-full h-full flex justify-center items-center pointer-events-auto bg-black bg-opacity-80">
-        <div class="glass-panel p-8 rounded-lg text-center text-white shadow-2xl max-w-sm">
-            <h1 class="text-4xl font-bold mb-2">You Died</h1>
-            <p class="mb-4 text-gray-300">Your final score was <span id="final-score">0</span>.</p>
-            <button id="respawn-button" class="ui-element w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-6 rounded-lg transition-transform transform hover:scale-105 shadow-lg">Respawn</button>
-        </div>
-    </div>
+      <div class="chat-feed">
+        {#each $ui.chat as message (message.time + message.id)}
+          <p class:system={message.system}><strong>{message.name}</strong> {message.text}</p>
+        {/each}
+      </div>
+      {#if $ui.chatOpen}
+        <form class="chat-input glass" onsubmit={(event) => { event.preventDefault(); submitChat(); }}>
+          <input bind:this={chatInput} bind:value={chatText} maxlength="120" placeholder="Send a message…" />
+          <button>Send</button>
+        </form>
+      {/if}
+      <div class="control-hint glass"><span><kbd>WASD</kbd> move</span><span><kbd>Mouse</kbd> aim & slash</span><span><kbd>Q</kbd> throw</span><span><kbd>E</kbd> ability</span><span><kbd>Enter</kbd> chat</span></div>
 
-    <div id="instructions-modal" class="hidden absolute inset-0 w-full h-full flex justify-center items-center pointer-events-auto bg-black bg-opacity-80">
-        <div class="glass-panel p-8 rounded-lg text-white shadow-2xl max-w-lg text-left relative">
-            <h1 class="text-3xl font-bold mb-4 text-center border-b border-gray-500 pb-2">How to Play</h1>
-            <div class="space-y-4 text-gray-300 max-h-[70vh] overflow-y-auto pr-4">
-                <div><h2 class="font-bold text-lg text-white">Objective</h2><p>Collect colored orbs and defeat enemies to increase your score. Reach <strong>14,500 points</strong> to unlock the option to reset the map!</p></div>
-                <div>
-                    <h2 class="font-bold text-lg text-white">Controls</h2>
-                    <ul class="list-disc list-inside">
-                        <li><strong>Move:</strong> WASD or Arrow Keys</li><li><strong>Aim:</strong> Mouse</li><li><strong>Attack:</strong> Left Click</li><li><strong>Whirlwind (AoE):</strong> 'E' Key</li><li><strong>Throw Weapon:</strong> Right Click</li><li><strong>Dash:</strong> Shift Key</li><li><strong>Block:</strong> 'X' Key or Middle Mouse</li>
-                    </ul>
-                </div>
-                <div>
-                    <h2 class="font-bold text-lg text-white">Map Features</h2>
-                    <ul class="list-disc list-inside"><li><strong class="text-yellow-400">King of the Hill:</strong> Stand in the glowing gold zones to get a 2x score multiplier.</li><li><strong class="text-gray-400">Destructible Cover:</strong> Crystal formations block movement and attacks, but can be destroyed.</li><li><strong class="text-red-400">Wasteland Lava:</strong> The central badlands are still dangerous.</li><li><strong class="text-cyan-300">Western Shoals:</strong> Water slows movement; islands are safe and currents carry you.</li><li><strong class="text-amber-300">Eastern Desert:</strong> Oases heal, quicksand slows, and dust devils throw fighters off course.</li></ul>
-                </div>
-                <div>
-                    <h2 class="font-bold text-lg text-white">Power-ups (5 sec duration)</h2>
-                    <ul class="list-disc list-inside"><li><strong class="text-red-400">Berserk (Red Orb):</strong> Doubles your damage.</li><li><strong class="text-yellow-400">Haste (Yellow Orb):</strong> Grants a major speed boost.</li><li><strong class="text-blue-400">Aegis (Blue Orb):</strong> Gives you a temporary shield.</li></ul>
-                </div>
-                <div>
-                    <h2 class="font-bold text-lg text-white">Special NPCs</h2>
-                    <ul class="list-disc list-inside"><li><strong class="text-green-400">Healer Bots:</strong> Follow and heal you.</li><li><strong class="text-gray-400">Shuriken Bots:</strong> Attack from a distance.</li><li><strong class="text-purple-400">Tank Bots:</strong> Durable bots with a projectile-blocking shield.</li><li><strong class="text-yellow-500">Stun Lancer:</strong> Slams the ground to stun you.</li><li><strong class="text-lime-400">Alchemist:</strong> Creates pools of damaging poison.</li><li><strong class="text-gray-500">Thief:</strong> Steals your score and runs away!</li></ul>
-                </div>
-                <div><h2 class="font-bold text-lg text-white">Upgrades</h2><p>Use your score to buy passive upgrades from the panel on the left. These upgrades reset when you die.</p></div>
-            </div>
-            <button id="close-instructions-button" class="ui-element absolute top-4 right-4 bg-red-600 hover:bg-red-700 text-white font-bold py-1 px-3 rounded-full transition-transform transform hover:scale-105">X</button>
+      {#if $evolutionChoices.length > 0}
+        <div class="evolution-dock glass">
+          <small>EVOLUTION AVAILABLE</small>
+          <div>{#each $evolutionChoices as choice (choice.name)}<button style={`--class-color:${choice.color}`} onclick={() => gameSocket.evolve(choice.name)}><i></i><span><strong>{choice.label}</strong>{choice.description}</span></button>{/each}</div>
         </div>
+      {/if}
+    </section>
+
+    {#if $ui.self.dead}
+      <div class="overlay death-overlay">
+        <section class="modal death-card">
+          <small>RUN ENDED</small><h1>You were outplayed.</h1>
+          <div><span>Coins secured<strong>{Math.floor($ui.self.coins).toLocaleString()}</strong></span><span>Stabs<strong>{$ui.self.kills}</strong></span><span>Class<strong>{classLabel($ui.self.evolution)}</strong></span></div>
+          <button class="primary" onclick={() => gameSocket.respawn()}>Return to the arena</button>
+        </section>
+      </div>
+    {/if}
+  {/if}
+
+  {#if $ui.screen === 'menu' || $ui.screen === 'connecting'}
+    <div class="menu-shell">
+      <div class="menu-atmosphere"></div>
+      <section class="hero-panel">
+        <div class="logo"><span>8</span><h1>8j8k</h1></div>
+        <p class="eyebrow">MULTIPLAYER BLADE ARENA</p>
+        <h2>Evolve. Outfight.<br/><em>Own the arena.</em></h2>
+        <p class="lede">Cut through a living battlefield of rivals, roaming fighters, treasure chests and branching combat classes.</p>
+        <div class="join-card glass">
+          <label>CALLSIGN<input bind:value={name} maxlength="18" placeholder="Wanderer" /></label>
+          <div class="colors"><span>ARMOR COLOR</span>{#each colors as swatch}<button class:selected={swatch === color} style={`--swatch:${swatch}`} aria-label={`Use ${swatch}`} onclick={() => color = swatch}></button>{/each}</div>
+          <button class="primary play" disabled={$ui.screen === 'connecting'} onclick={play}>{$ui.screen === 'connecting' ? 'Connecting…' : 'Enter arena'}<span>→</span></button>
+          {#if $ui.error}<p class="error">{$ui.error}</p>{/if}
+        </div>
+        <div class="menu-actions"><button onclick={() => ui.update((state) => ({ ...state, showHelp: true }))}>How to play</button><button onclick={() => ui.update((state) => ({ ...state, showShop: true }))}>Armory</button><button onclick={() => ui.update((state) => ({ ...state, showSettings: true }))}>Settings</button></div>
+      </section>
+      <section class="feature-strip"><article><b>01</b><span><strong>12 evolutions</strong>Build into a specialized endgame class.</span></article><article><b>02</b><span><strong>Living world</strong>NPC rivals, treasure tiers and biome landmarks.</span></article><article><b>03</b><span><strong>Real multiplayer</strong>Authoritative WebSocket combat and shared progression.</span></article></section>
     </div>
-</div>
+  {/if}
+
+  {#if $ui.showHelp}
+    <div class="overlay">
+      <section class="modal help-modal"><button class="close" onclick={() => ui.update((state) => ({ ...state, showHelp: false }))}>×</button><p class="eyebrow">FIELD MANUAL</p><h1>Fight your way upward.</h1><div class="help-grid"><article><kbd>WASD</kbd><h3>Move</h3><p>Cross a 15,000-unit arena and use terrain landmarks to orient yourself.</p></article><article><kbd>Mouse 1</kbd><h3>Slash</h3><p>Aim your blade. Timing, reach and class stats decide each exchange.</p></article><article><kbd>Q</kbd><h3>Throw</h3><p>Give up your melee blade briefly for a high-risk ranged attack.</p></article><article><kbd>E</kbd><h3>Ability</h3><p>Every evolution unlocks a defining power with its own cooldown.</p></article></div><h2>Progression</h2><p>Collect coins and break rarity-tiered chests. At score milestones, choose a branch in the evolution tree. Defeating rivals earns bounties, while death costs part of your hoard.</p></section>
+    </div>
+  {/if}
+
+  {#if $ui.showSettings}
+    <div class="overlay">
+      <section class="modal settings-modal"><button class="close" onclick={() => ui.update((state) => ({ ...state, showSettings: false }))}>×</button><p class="eyebrow">SYSTEM</p><h1>Settings</h1><label>Camera zoom<input type="range" min="0.75" max="1.3" step="0.05" value={$ui.settings.cameraZoom} oninput={(event) => setSettings({ cameraZoom: Number(event.currentTarget.value) })}/><output>{$ui.settings.cameraZoom.toFixed(2)}×</output></label><label>Master volume<input type="range" min="0" max="1" step="0.05" value={$ui.settings.masterVolume} oninput={(event) => setSettings({ masterVolume: Number(event.currentTarget.value) })}/><output>{Math.round($ui.settings.masterVolume * 100)}%</output></label><label>Graphics<select value={$ui.settings.quality} onchange={(event) => setSettings({ quality: event.currentTarget.value as 'high' | 'balanced' | 'performance' })}><option value="high">High</option><option value="balanced">Balanced</option><option value="performance">Performance</option></select></label><label class="toggle">Screen shake<input type="checkbox" checked={$ui.settings.screenShake} onchange={(event) => setSettings({ screenShake: event.currentTarget.checked })}/></label></section>
+    </div>
+  {/if}
+
+  {#if $ui.showShop}
+    <div class="overlay">
+      <section class="modal shop-modal"><button class="close" onclick={() => ui.update((state) => ({ ...state, showShop: false }))}>×</button><p class="eyebrow">ARMORY</p><h1>Combat archive</h1><p>Preview every class path before choosing your evolution in the arena.</p><div class="class-grid">{#each Object.values(EVOLUTIONS) as item (item.name)}<article style={`--class-color:${item.color}`}><i></i><div><small>{item.unlockAt.toLocaleString()} COINS</small><h3>{item.label}</h3><p>{item.description}</p><strong>{item.abilityName}</strong></div></article>{/each}</div></section>
+    </div>
+  {/if}
+</main>

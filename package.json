@@ -1,24 +1,30 @@
 {
-  "name": "6j8k-v2-multiplayer",
-  "version": "3.0.0",
+  "name": "8j8k-phaser-multiplayer",
+  "version": "4.0.0",
   "private": true,
+  "license": "GPL-3.0-only",
   "type": "module",
   "scripts": {
-    "dev": "node server/index.js",
+    "dev": "tsx server/index.ts",
     "build": "vite build",
-    "check": "svelte-check --tsconfig ./jsconfig.json",
-    "test": "node --test",
-    "start": "node server/index.js"
+    "check": "svelte-check --tsconfig ./tsconfig.json && tsc --noEmit",
+    "test": "node --import tsx --test test/*.test.ts",
+    "start": "tsx server/index.ts"
   },
   "dependencies": {
-    "@sveltejs/vite-plugin-svelte": "latest",
+    "phaser": "4.2.1",
     "svelte": "latest",
-    "vite": "latest",
     "ws": "latest"
   },
   "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "latest",
+    "@types/node": "latest",
+    "@types/ws": "latest",
+    "sass": "latest",
     "svelte-check": "latest",
-    "typescript": "latest"
+    "tsx": "latest",
+    "typescript": "latest",
+    "vite": "latest"
   },
   "engines": {
     "node": ">=20"

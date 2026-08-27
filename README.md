@@ -1,8 +1,6 @@
-# 6j8k V2 — Svelte multiplayer port
+# 8j8k
 
-This is a faithful Svelte port of the original `V2` game from [`6j8k.version1_and_version2`](https://github.com/SahilKDas/6j8k.version1_and_version2/tree/main/V2), with WebSocket multiplayer added alongside the original NPC simulation.
-
-The V2 canvas renderer, CSS, NPC archetypes, bosses, events, map features, combat, upgrades, particles, minimap, and controls are preserved. Svelte owns the page lifecycle and UI markup; the original canvas engine continues to animate on `requestAnimationFrame`. A lightweight WebSocket room synchronizes connected human players at 20 Hz, interpolates remote movement, validates PvP range and rate limits, and coordinates shared map resets.
+A real-time multiplayer blade arena built with Svelte, TypeScript, Sass, Phaser 4.2.1, and WebSockets.
 
 ## Run locally
 
@@ -11,23 +9,25 @@ npm install
 npm run dev
 ```
 
-Open `http://localhost:5173`. Open another browser tab to test multiplayer.
+Open `http://localhost:5173` in two or more browser windows to test multiplayer. The HTTP app, game API, and WebSocket endpoint are served from the same port.
 
-## Production
+## Commands
 
-```bash
-npm run build
-NODE_ENV=production npm start
-```
+- `npm run dev` — start the development server with Vite middleware and WebSockets
+- `npm run check` — run Svelte diagnostics and strict TypeScript checking
+- `npm test` — run progression, world, networking, and validation tests
+- `npm run build` — create the production client bundle
+- `npm start` — start the combined app and multiplayer server
 
-Set `PORT` to change the default port (`5173`). The HTTP server serves the built Svelte client and upgrades `/ws` connections.
+## Architecture
 
-## Controls
+- `src/` contains the Svelte interface, Sass design system, typed client state, WebSocket client, and Phaser scene.
+- `server/` contains the authoritative multiplayer simulation and HTTP/WebSocket server.
+- `shared/` contains the protocol, world configuration, progression tree, and shared types.
+- `public/assets/` contains local sound and chest assets.
 
-- Move: `WASD` or arrow keys
-- Aim: mouse
-- Attack: left click or space
-- Throw weapon: right click
-- Whirlwind: `E`
-- Dash: `Shift`
-- Block: `X` or middle click
+The server owns movement validation, NPC decisions, melee hits, thrown weapons, coins, chests, health, abilities, evolution eligibility, respawning, chat sanitization, and leaderboard state. Clients render interpolated snapshots and send only bounded input commands.
+
+## License
+
+GNU General Public License version 3. See `LICENSE`.
