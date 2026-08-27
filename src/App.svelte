@@ -56,7 +56,7 @@
   {#if $ui.screen === 'playing' && $ui.self}
     <section class="hud" aria-label="Game interface">
       <header class="topbar glass">
-        <div class="brand"><span class="brand-mark">8</span><strong>8j8k</strong><small>Giedi arena</small></div>
+        <div class="brand"><span class="brand-mark">8</span><strong>8j8k</strong><small>Arena</small></div>
         <div class="server"><span class:online={$ui.connection === 'online'}></span>{$ui.connection} · {$ui.ping} ms · {$ui.fps} fps</div>
         <div class="top-actions">
           <button onclick={() => ui.update((state) => ({ ...state, showHelp: true }))}>?</button>
