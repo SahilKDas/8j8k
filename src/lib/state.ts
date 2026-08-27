@@ -3,7 +3,6 @@ import { getAvailableEvolutions } from '../../shared/evolutions.js';
 import type { ChatMessage, PlayerState, Snapshot } from '../../shared/types.js';
 
 export interface GameSettings {
-  masterVolume: number;
   quality: 'high' | 'balanced' | 'performance';
   cameraZoom: number;
   screenShake: boolean;
@@ -25,7 +24,7 @@ export interface UiState {
   settings: GameSettings;
 }
 
-const defaultSettings: GameSettings = { masterVolume: 0.55, quality: 'high', cameraZoom: 1, screenShake: true };
+const defaultSettings: GameSettings = { quality: 'high', cameraZoom: 1, screenShake: true };
 
 function loadSettings(): GameSettings {
   if (typeof localStorage === 'undefined') return defaultSettings;
@@ -55,5 +54,5 @@ export function receiveSnapshot(snapshot: Snapshot): void {
 }
 
 export function receiveChat(message: ChatMessage): void {
-  ui.update((state) => ({ ...state, chat: [...state.chat.slice(-7), message] }));
+  ui.update((state) => ({ ...state, chat: [...state.chat.slice(-4), message] }));
 }

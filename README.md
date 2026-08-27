@@ -24,9 +24,9 @@ Open `http://localhost:5173` in two or more browser windows to test multiplayer.
 - `src/` contains the Svelte interface, Sass design system, typed client state, WebSocket client, and Phaser scene.
 - `server/` contains the authoritative multiplayer simulation and HTTP/WebSocket server.
 - `shared/` contains the protocol, world configuration, progression tree, and shared types.
-- `public/assets/` contains local sound and chest assets.
+- Arena art, fighters, blades, coins, and chests are drawn procedurally at runtime.
 
-The server owns movement validation, NPC decisions, melee hits, thrown weapons, coins, chests, health, abilities, evolution eligibility, respawning, chat sanitization, and leaderboard state. Clients render interpolated snapshots and send only bounded input commands.
+The server owns movement validation, NPC decisions, melee hits, thrown weapons, coins, chests, health, abilities, evolution eligibility, respawning, chat sanitization, and leaderboard state. Clients predict local movement, interpolate remote snapshots, and send only bounded input commands.
 
 ## License
 

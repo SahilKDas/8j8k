@@ -1,7 +1,7 @@
 export const WORLD_SIZE = 15_000;
 export const WORLD_HALF = WORLD_SIZE / 2;
 export const SERVER_TICK_RATE = 30;
-export const SNAPSHOT_RATE = 12;
+export const SNAPSHOT_RATE = 20;
 export const PLAYER_RADIUS = 26;
 export const BASE_SPEED = 330;
 export const BASE_HEALTH = 100;
